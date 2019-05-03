@@ -1,0 +1,1335 @@
+/*1.0*/
+/*已验证收敛性*/
+
+CLASS e
+    /*函数间传递的大数组*/
+	CLASSWIDE INTEGER btm_shell_elem_id(VIRTUAL)						/*合并组单元编号*/
+	CLASSWIDE STRING btm_shell_elem_string[VIRTUAL]						/*合并组单元字符串*/
+
+	CLASSWIDE INTEGER frame_x(VIRTUAL)									/*舷侧船底单元所在“肋位”*/
+	
+	CLASSWIDE REAL area_normal_z(VIRTUAL)								/*舷侧船底单元在z方向的投影面积*/
+	CLASSWIDE REAL area_normal_z_x(VIRTUAL)								/*舷侧船底单元在z方向的投影面积与x方向力臂乘积*/
+	CLASSWIDE REAL area_normal_z_y(VIRTUAL)								/*舷侧船底单元在z方向的投影面积与y方向力臂乘积*/
+	CLASSWIDE REAL area_normal_y_z(VIRTUAL)								/*舷侧船底单元在z方向的投影面积与x方向力臂乘积*/
+
+    /*用于input数据的变量*/
+    CLASSWIDE INTEGER ip_loadcase_num
+    CLASSWIDE INTEGER ip_frame_num
+    CLASSWIDE INTEGER ip_normal		/*向外为1*/
+    CLASSWIDE INTEGER ip_cargocase_num
+    CLASSWIDE INTEGER ip_flag(VIRTUAL)
+    CLASSWIDE INTEGER ip_cargocase_i(VIRTUAL)
+    
+    CLASSWIDE REAL ip_frame0
+    CLASSWIDE REAL ip_frame_distance
+    CLASSWIDE REAL ip_moment_x_location
+    CLASSWIDE REAL ip_moment_z_location
+    CLASSWIDE REAL ip_rox
+    CLASSWIDE REAL ip_h
+    CLASSWIDE REAL ip_p
+    CLASSWIDE REAL ip_ini_d(VIRTUAL)
+    CLASSWIDE REAL ip_ini_a(VIRTUAL)
+    CLASSWIDE REAL ip_ini_ax(VIRTUAL)
+    CLASSWIDE REAL ip_ini_angle(VIRTUAL)
+    CLASSWIDE REAL ip_l(VIRTUAL)
+    CLASSWIDE REAL ip_x0_y0(VIRTUAL)
+    
+    CLASSWIDE STRING ip_btm[32]
+    CLASSWIDE STRING ip_shell[32]
+    CLASSWIDE STRING ip_cargocase_name[32](VIRTUAL)
+    CLASSWIDE STRING ip_all_cargocase_name[32](VIRTUAL)
+    
+    CLASSWIDE INTEGER cw_num_nodes
+	CLASSWIDE INTEGER cw_node_ids(VIRTUAL)
+	CLASSWIDE REAL cw_node_positions(VIRTUAL)
+	CLASSWIDE INTEGER cw_num_elements
+	CLASSWIDE INTEGER cw_element_ids(VIRTUAL)
+	CLASSWIDE REAL cw_element_positions(VIRTUAL)
+
+FUNCTION equi()
+/*输入数据  INPUT DATA*/
+
+/*整数*/    
+    /*工况数*/
+    ip_loadcase_num = 2
+    /*载况数*/
+    ip_cargocase_num = 2
+    /*划分肋位数*/
+    ip_frame_num = 221
+    /*外板法向（法向箭头向外则填1，反之-1）*/
+    ip_normal = 1
+/*浮点数（小数）*/    
+    /*肋位原点（建议从船尾向后半个肋位）*/
+    ip_frame0 = -2450.0
+    /*肋距（需要保证划分肋位的范围覆盖整个船长范围）*/
+    ip_frame_distance = 500
+    /*取矩点x坐标（即LBC中填的点的坐标，默认y=0）*/
+    ip_moment_x_location = 107550.0
+    /*取矩点z坐标*/
+    ip_moment_z_location = 4500.0
+    /*纵倾旋转中心x坐标（一般取船中x坐标*/
+    ip_rox = 55000
+    /*波浪全波高（区别于半波高）*/
+    ip_h = 3000
+    /*舷外水密度（淡水为0.000001，海水为0.000001025）*/
+    ip_p = 0.000001025
+/*字符串（注意字符串需要英文双引号""）*/
+    /*Patran中船底组名（如果只有一个组，可以像图片那样填一样的组名）*/
+    ip_btm = "0_out"
+    /*Patran中舷侧组名*/
+    ip_shell = "0_out"
+/*为变量数组赋长度（不需修改）*/    
+    sys_allocate_array(ip_flag,1,ip_loadcase_num)
+    sys_allocate_array(ip_cargocase_i,1,ip_loadcase_num)
+    sys_allocate_array(ip_ini_d,1,ip_loadcase_num)
+    sys_allocate_array(ip_ini_a,1,ip_loadcase_num)
+    sys_allocate_array(ip_ini_ax,1,ip_loadcase_num)
+    sys_allocate_array(ip_ini_angle,1,ip_loadcase_num)
+    sys_allocate_array(ip_l,1,ip_loadcase_num)
+    sys_allocate_array(ip_x0_y0,1,ip_loadcase_num)
+    sys_allocate_array(ip_cargocase_name,1,ip_loadcase_num)
+    sys_allocate_array(ip_all_cargocase_name,1,ip_cargocase_num)
+/*输入所有的载况名，行数与载况数一致，注意修改括号内编号！！！*/
+    ip_all_cargocase_name(1) = "force"
+	ip_all_cargocase_name(2) = "inertial"
+		
+/*为每一个工况输入数据，从上至下依次为：*/
+    /*初始吃水*/
+    /*初始纵倾角（弧度，不知道就填0）*/
+    /*初始横倾角（弧度，不知道就填0）*/
+    /*浪向角	（角度）*/
+    /*波长		（毫米）注意斜浪的波长会变化*/
+    /*波浪原点	（毫米）纵向波浪为x坐标，横浪为y坐标*/
+    /*波浪形式  （静水0、中拱-1、中垂1）*/
+    /*该工况对应载况的编号，即ip_all_cargocase_name数组中的括号内编号*/
+/*每一个工况对应一组数据*/
+    ip_ini_d		(1) = 2400
+    ip_ini_a		(1) = 0
+    ip_ini_ax		(1) = 0
+    ip_ini_angle	(1) = 0
+    ip_l			(1) = 110000  
+    ip_x0_y0		(1) = -2400
+    ip_flag			(1) = -1
+    ip_cargocase_i	(1) = 1
+    
+    ip_ini_d		(2) = 2400
+    ip_ini_a		(2) = 0
+    ip_ini_ax		(2) = 0
+    ip_ini_angle	(2) = 30
+    ip_l			(2) = 95262.79  
+    ip_x0_y0		(2) = -2400
+    ip_flag			(2) = 1
+    ip_cargocase_i	(2) = 2
+    
+$    ip_ini_d		(3) = 2400
+$    ip_ini_a		(3) = 0
+$    ip_ini_ax		(3) = 0
+$    ip_ini_angle	(3) = 90
+$    ip_l			(3) = 19200  
+$    ip_x0_y0		(3) = -9600
+$    ip_flag			(3) = 1
+$    ip_cargocase_i	(3) = 1
+$    
+$    ip_ini_d		(4) = 2400
+$    ip_ini_a		(4) = 0
+$    ip_ini_ax		(4) = 0
+$    ip_ini_angle	(4) = 30
+$    ip_l			(4) = 95262.79  
+$    ip_x0_y0		(4) = -2400   
+$    ip_flag			(4) = -1
+$    ip_cargocase_i	(4) = 1
+$    
+$    ip_ini_d		(5) = 2400
+$    ip_ini_a		(5) = 0
+$    ip_ini_ax		(5) = 0
+$    ip_ini_angle	(5) = 90   
+$    ip_l			(5) = 19200  
+$    ip_x0_y0		(5) = -9600
+$    ip_flag			(5) = -1
+$    ip_cargocase_i	(5) = 1
+$    
+$    ip_ini_d		(6) = 2400          
+$    ip_ini_a		(6) = 0             
+$    ip_ini_ax		(6) = 0             
+$    ip_ini_angle	(6) = 0             
+$    ip_l			(6) = 110000        
+$    ip_x0_y0		(6) = -2400         
+$    ip_flag			(6) = -1            
+$    ip_cargocase_i	(6) = 2          
+$                                        
+$    ip_ini_d		(7) = 2400          
+$    ip_ini_a		(7) = 0             
+$    ip_ini_ax		(7) = 0             
+$    ip_ini_angle	(7) = 30            
+$    ip_l			(7) = 95262.79      
+$    ip_x0_y0		(7) = -2400         
+$    ip_flag			(7) = 1             
+$    ip_cargocase_i	(7) = 2            
+$                                        
+$    ip_ini_d		(8) = 2400          
+$    ip_ini_a		(8) = 0             
+$    ip_ini_ax		(8) = 0             
+$    ip_ini_angle	(8) = 90            
+$    ip_l			(8) = 19200         
+$    ip_x0_y0		(8) = -9600         
+$    ip_flag			(8) = 1             
+$    ip_cargocase_i	(8) = 2          
+$                                        
+$    ip_ini_d		(9) = 2400          
+$    ip_ini_a		(9) = 0             
+$    ip_ini_ax		(9) = 0             
+$    ip_ini_angle	(9) = 30            
+$    ip_l			(9) = 95262.79      
+$    ip_x0_y0		(9) = -2400         
+$    ip_flag			(9) = -1            
+$    ip_cargocase_i	(9) = 2           
+$                                        
+$    ip_ini_d		(10) =2400          
+$    ip_ini_a		(10) =0             
+$    ip_ini_ax		(10) =0             
+$    ip_ini_angle	(10) =90            
+$    ip_l			(10) =19200         
+$    ip_x0_y0		(10) =-9600         
+$    ip_flag			(10) =-1            
+$    ip_cargocase_i	(10) =2            
+
+    
+    /*针对较大模型，需要在计算中途reclaim，因此在第299行设置了reclaim语句*/
+    /*但是在计算时需要手动在页面点击OK，因此对于较小模型建议将该语句注释掉，即在句首加$符号*/
+    
+/*完成数据输入	data input completed*/
+
+	INTEGER i
+	
+	FOR(i = 1 TO ip_loadcase_num)
+		ip_cargocase_name(i) = ip_all_cargocase_name(ip_cargocase_i(i))
+	END FOR
+	
+/*不变载荷的合力，1，载况数*/
+
+	REAL f_static(VIRTUAL)
+	REAL m_static(VIRTUAL)
+	REAL mx_static(VIRTUAL)
+	
+	REAL d(1:3)
+	REAL a(1:3)					
+	REAL ax(1:3)			/*三组吃水纵倾角横倾角与对应的计算值*/
+	REAL l					/*波长*/
+
+	
+	sys_allocate_array(f_static,1,ip_cargocase_num)
+	sys_allocate_array(m_static,1,ip_cargocase_num)
+	sys_allocate_array(mx_static,1,ip_cargocase_num)
+	
+	REAL load_resultants(6)
+	
+	FOR(i=1 TO ip_cargocase_num)
+		db_activate_load_case(ip_all_cargocase_name(i))
+		e.lbc_resultants(load_resultants)
+		f_static(i) = load_resultants(3)
+		m_static(i) = load_resultants(5)
+		mx_static(i) = load_resultants(4)
+	END FOR
+				
+
+/*进行预计算，创建载荷*/
+	INTEGER btm_shell_elem_num			/*合并组单元数*/
+
+	e.pre_water(btm_shell_elem_num)
+
+	STRING loadcase_name[32](VIRTUAL)
+	INTEGER loadcase_id(VIRTUAL)							/*工况ID*/
+	INTEGER loadcase_num									/*待求合力、合力矩工况数量*/		
+	INTEGER cargocase_i(VIRTUAL)								/*工况对应的载况在static_load中对应的数组号i*/	
+	INTEGER water_id(VIRTUAL)
+	INTEGER water_id_try1(VIRTUAL)
+	INTEGER water_id_try2(VIRTUAL)
+	INTEGER field_id(VIRTUAL)
+	INTEGER field_id_try1(VIRTUAL)
+	INTEGER field_id_try2(VIRTUAL)	
+
+	/*vba*/
+	loadcase_num=ip_loadcase_num
+			
+		sys_allocate_array(loadcase_name,1,loadcase_num)
+		sys_allocate_array(loadcase_id,1,loadcase_num)
+		sys_allocate_array(cargocase_i,1,loadcase_num)
+		
+		sys_allocate_array(water_id,1,loadcase_num)
+		sys_allocate_array(water_id_try1,1,loadcase_num)
+		sys_allocate_array(water_id_try2,1,loadcase_num)
+		sys_allocate_array(field_id,1,loadcase_num)
+		sys_allocate_array(field_id_try1,1,loadcase_num)
+		sys_allocate_array(field_id_try2,1,loadcase_num)
+		
+		e.create_load(loadcase_name,loadcase_id,cargocase_i,water_id,water_id_try1,water_id_try2,field_id,field_id_try1,field_id_try2)			/*全部为output*/
+
+/*为field输入初始吃水、纵倾、横倾*/
+	REAL ini_d(VIRTUAL)
+	REAL ini_a(VIRTUAL)
+	REAL ini_ax(VIRTUAL)
+	REAL ini_angle(VIRTUAL)
+	INTEGER flag(VIRTUAL)
+	
+	sys_allocate_array(ini_d,1,loadcase_num)
+	sys_allocate_array(ini_a,1,loadcase_num)
+	sys_allocate_array(ini_ax,1,loadcase_num)
+	sys_allocate_array(ini_angle,1,loadcase_num)
+	sys_allocate_array(flag,1,loadcase_num)
+	
+	/*VBA*/
+	/*LB2_float*/
+	FOR(i=1 TO loadcase_num)
+	    ini_d(i)=ip_ini_d(i)
+    	ini_a(i)=ip_ini_a(i)
+    	ini_ax(i)=ip_ini_ax(i)
+    	ini_angle(i)=ip_ini_angle(i)
+    	flag(i)=ip_flag(i)                  /*指示静水0、中拱-1、中垂1*/
+	END FOR
+
+/*设定调平目标*/
+	REAL goal_f	
+	REAL goal_m
+	REAL goal_mx
+
+	goal_f=0
+	goal_m=0
+	goal_mx=0
+
+/*载荷计算误差修正*/
+	/*后续设计放弃误差修正*/
+
+/*调平计算参数*/	
+	REAL h,b,c,s,t						/*h-t为控制矩阵参数*/
+	
+	REAL f(1:3)
+	REAL m(1:3)
+	REAL mx(1:3)
+	
+	INTEGER water_id_temp				/*调用函数会改变water_id，故设临时变量*/
+
+	INTEGER normal						/*外板单元法向，向外为1，向内为-1*/
+	REAL f_water
+	REAL m_water
+	REAL mx_water
+	REAL f_water_frame(VIRTUAL) 
+    REAL m_water_frame(VIRTUAL) 
+	REAL mx_water_frame(VIRTUAL)
+	INTEGER frame_num
+	
+	/*VBA*/
+	normal = ip_normal		/*向外为1*/
+	frame_num = ip_frame_num
+	
+	sys_allocate_array(f_water_frame,1,frame_num)  
+	sys_allocate_array(m_water_frame,1,frame_num) 
+	sys_allocate_array(mx_water_frame,1,frame_num) 	
+	
+	/*记录调平过程*/
+	INTEGER times(VIRTUAL)
+	REAL cost_time(VIRTUAL)
+	REAL trace_f(VIRTUAL)
+	REAL trace_m(VIRTUAL)
+	REAL trace_mx(VIRTUAL)
+	
+	sys_allocate_array(times,1,loadcase_num)
+	sys_allocate_array(cost_time,1,loadcase_num)
+	sys_allocate_array(trace_f,1,loadcase_num,0,12)
+	sys_allocate_array(trace_m,1,loadcase_num,0,12)
+	sys_allocate_array(trace_mx,1,loadcase_num,0,12)
+	
+	FOR(i=1 TO loadcase_num)
+		times(i)=1
+	END FOR
+	
+	/*试算载荷的改变量*/
+	REAL d_d
+	REAL d_a
+	REAL d_ax
+
+/*针对工况循环*/	
+	FOR(i=1 TO loadcase_num)
+	
+		/*半自动reclaim*/
+		uil_primary_file.db_reclaim()
+	
+		d(1)=ini_d(i)
+		a(1)=ini_a(i)
+		ax(1)=ini_ax(i)
+		l = ip_l(i)
+		
+		e.modify_field(field_id(i),d(1),a(1),ax(1),ini_angle(i),l,ip_x0_y0(i),flag(i))
+		loadsbcs_eval_all()
+		
+		water_id_temp=water_id(i)
+		e.water_f_m(water_id_temp,btm_shell_elem_num,f_water,m_water,f_water_frame,m_water_frame)
+		e.water_mx(water_id_temp,btm_shell_elem_num,mx_water,mx_water_frame)
+
+		f(1)=f_static(cargocase_i(i))+normal*f_water
+		m(1)=m_static(cargocase_i(i))+normal*m_water
+		mx(1)=mx_static(cargocase_i(i))+normal*mx_water
+
+		trace_f(i,times(i))=f(1)
+		trace_m(i,times(i))=m(1)
+		trace_mx(i,times(i))=mx(1)
+		
+		/*正相关*/
+		IF(f(1)>=0)THEN
+			d_d=-10
+		ELSE
+			d_d=10
+		END IF
+		/*负相关*/
+		IF(m(1)>=0)THEN
+			d_a=-0.001
+		ELSE
+			d_a=0.001
+		END IF
+		/*正相关*/
+		IF(mx(1)>=0)THEN
+			d_ax=0.0001
+		ELSE
+			d_ax=-0.0001
+		END IF
+	
+		cost_time(i)=sys_clock()
+		
+		WHILE(	(mth_abs(f(1))>mth_abs(goal_f))||(mth_abs(m(1))>mth_abs(goal_m))||(mth_abs(mx(1))>mth_abs(goal_mx))	)
+
+			IF(times(i)<=11)THEN				
+			
+				d(2)=d(1)
+				a(2)=a(1)+d_a
+				ax(2)=ax(1)
+				
+				d(3)=d(1)+d_d
+				a(3)=a(1)
+				ax(3)=ax(1)
+
+				e.modify_field(field_id_try1(i),d(2),a(2),ax(2),ini_angle(i),l,ip_x0_y0(i),flag(i))					/*INTEGER,REAL,REAL,REAL,*/
+				e.modify_field(field_id_try2(i),d(3),a(3),ax(3),ini_angle(i),l,ip_x0_y0(i),flag(i))
+				loadsbcs_eval_all()
+
+				/*吃水纵倾调整*/
+
+				water_id_temp=water_id_try1(i)			
+				e.water_f_m(water_id_temp,btm_shell_elem_num,f_water,m_water,f_water_frame,m_water_frame)
+				f(2)=f_static(cargocase_i(i))+normal*f_water
+				m(2)=m_static(cargocase_i(i))+normal*m_water				
+				
+				water_id_temp=water_id_try2(i)				
+				e.water_f_m(water_id_temp,btm_shell_elem_num,f_water,m_water,f_water_frame,m_water_frame)
+				f(3)=f_static(cargocase_i(i))+normal*f_water
+				m(3)=m_static(cargocase_i(i))+normal*m_water
+				
+				IF((a(2)-a(1)==0)||(d(3)-d(1)==0))THEN
+					BREAK
+				END IF
+				
+				h=(m(2)-m(1))/(a(2)-a(1))
+				b=(m(3)-m(1))/(d(3)-d(1))
+				c=(f(2)-f(1))/(a(2)-a(1))
+				s=(f(3)-f(1))/(d(3)-d(1))
+	
+				IF((h==0)||(b==0)||(c==0)||(s==0))THEN
+					BREAK
+				END IF
+				
+				IF((h*s-b*c)==0)THEN
+					BREAK
+				END IF
+
+				d(1)=(c*m(1)-h*f(1))/(h*s-b*c)+d(1)
+				a(1)=(b*f(1)-s*m(1))/(h*s-b*c)+a(1)
+
+				times(i)=times(i)+1
+
+				/*横倾调整*/
+				d(2)=d(1)
+				a(2)=a(1)
+				ax(2)=ax(1)+d_ax
+				
+
+				e.modify_field(field_id(i),d(1),a(1),ax(1),ini_angle(i),l,ip_x0_y0(i),flag(i))
+				loadsbcs_eval_all()
+				water_id_temp=water_id(i)
+				e.water_mx(water_id_temp,btm_shell_elem_num,mx_water,mx_water_frame)
+				
+				mx(1)=mx_static(cargocase_i(i))+normal*mx_water
+
+				e.modify_field(field_id_try1(i),d(2),a(2),ax(2),ini_angle(i),l,ip_x0_y0(i),flag(i))
+				loadsbcs_eval_all()			
+				water_id_temp=water_id_try1(i)
+				e.water_mx(water_id_temp,btm_shell_elem_num,mx_water,mx_water_frame)
+				
+				mx(2)=mx_static(cargocase_i(i))+normal*mx_water
+
+				IF((ax(2)-ax(1))==0)THEN
+					BREAK
+				END IF
+
+				t=(mx(2)-mx(1))/(ax(2)-ax(1))
+		
+				IF(t==0)THEN
+					BREAK
+				END IF
+			
+				ax(1)=ax(1)-mx(1)/t
+
+				e.modify_field(field_id(i),d(1),a(1),ax(1),ini_angle(i),l,ip_x0_y0(i),flag(i))
+				loadsbcs_eval_all()
+				water_id_temp=water_id(i)
+				e.water_f_m(water_id_temp,btm_shell_elem_num,f_water,m_water,f_water_frame,m_water_frame)
+				water_id_temp=water_id(i)
+				e.water_mx(water_id_temp,btm_shell_elem_num,mx_water,mx_water_frame)
+				
+				f(1)=f_static(cargocase_i(i))+normal*f_water
+				m(1)=m_static(cargocase_i(i))+normal*m_water
+				mx(1)=mx_static(cargocase_i(i))+normal*mx_water
+			
+				trace_f(i,times(i))=f(1)
+				trace_m(i,times(i))=m(1)
+				trace_mx(i,times(i))=mx(1)
+			
+				d_d=(c*m(1)-h*f(1))/(h*s-b*c)
+				d_a=(b*f(1)-s*m(1))/(h*s-b*c)
+				d_ax=-mx(1)/t
+				
+				IF((d_d==0)||(d_a==0)||(d_ax==0))THEN
+					BREAK
+				END IF
+
+			ELSE
+				BREAK	
+ 			END IF			
+		END WHILE
+		
+		/*若中途结束计算，则记录最终结果*/
+		loadsbcs_eval_all()
+		water_id_temp=water_id(i)
+		e.water_f_m(water_id_temp,btm_shell_elem_num,f_water,m_water,f_water_frame,m_water_frame)
+		water_id_temp=water_id(i)
+		e.water_mx(water_id_temp,btm_shell_elem_num,mx_water,mx_water_frame)
+		
+		f(1)=f_static(cargocase_i(i))+normal*f_water
+		m(1)=m_static(cargocase_i(i))+normal*m_water
+		mx(1)=mx_static(cargocase_i(i))+normal*mx_water
+		
+		trace_f(i,times(i))=f(1)
+		trace_m(i,times(i))=m(1)
+		trace_mx(i,times(i))=mx(1)
+
+		
+		
+	END FOR
+
+
+	FOR(i=1 TO loadcase_num)
+		db_delete_lbc(water_id_try1(i))
+		db_delete_lbc(water_id_try2(i))
+		db_delete_field(field_id_try1(i))
+		db_delete_field(field_id_try2(i))
+	END FOR
+	
+	/*输出调平结果*/
+	e.output(ip_loadcase_num,times,trace_f,trace_m,trace_mx)
+
+END FUNCTION
+
+/**********************************************************/
+/********							          *************/
+/********		舷外水压力的合力与合力矩	  *************/
+/********		 （预计算,不重复执行）		  *************/
+/**********************************************************/
+
+
+/*获得力和力矩 同 pressure的响应关系*/
+/*本函数不参与循环！！！只执行一次！！！*/
+
+
+FUNCTION pre_water(btm_shell_elem_num)
+	STRING btm[32]						/*船底组名*/																																				
+	STRING shell[32]					/*舷侧组名*/																																				
+	INTEGER btm_id						/*船底组ID*/																																				
+	INTEGER shell_id					/*舷侧组ID*/
+																																					
+	INTEGER btm_elem_num				/*船底组单元数量*/																																				
+	INTEGER shell_elem_num				/*舷侧组单元数量*/
+	INTEGER btm_shell_elem_num			/*合并组单元数*/
+																																					
+	INTEGER btm_2d_elem_num				/*船底组2d单元数量*/																																				
+	INTEGER shell_2d_elem_num			/*舷侧组2d单元数量*/
+																																					
+	INTEGER btm_elem_id(VIRTUAL)		/*船底组单元ID*/																																							
+	INTEGER shell_elem_id(VIRTUAL)		/*舷侧组单元ID*/	
+																																				
+	INTEGER btm_2d_elem_id(VIRTUAL)		/*船底组2d单元ID*/																																							
+	INTEGER shell_2d_elem_id(VIRTUAL)	/*舷侧组2d单元ID*/	
+																																														
+	STRING btm_string[VIRTUAL]			/*船底组2d单元ID字符串*/																																													
+	STRING shell_string[VIRTUAL]		/*舷侧组2d单元ID字符串*/	
+	
+	INTEGER frame_num
+	REAL frame0
+	REAL frame_distance		
+	
+	REAL moment_x_location				/*取矩点x坐标*/
+	REAL moment_z_location				/*取矩点z坐标*/																																								
+	
+	INTEGER m							/*循环变量*/	
+	INTEGER k							/*循环变量*/
+	
+	REAL area_normal_y(VIRTUAL)			/*舷侧船底单元在y方向的投影面积*/
+
+	/*输入组名(VBA)*/
+	btm=ip_btm
+	shell=ip_shell
+	
+	/*VBA*/
+	frame_num=ip_frame_num
+	frame0=ip_frame0
+	frame_distance=ip_frame_distance
+	
+	/*VBA*/
+	moment_x_location=ip_moment_x_location
+	moment_z_location=ip_moment_z_location
+
+	/*获取当前组ID*/
+	db_get_group_id(btm,btm_id)
+	
+	/*获取当前组单元数*/
+	db_count_elems_in_group(btm_id,btm_elem_num)
+	
+	/*获取组内单元ID*/
+	sys_allocate_array(btm_elem_id,1,btm_elem_num)
+	db_get_elem_ids_in_group(btm_elem_num,btm_id,btm_elem_id)
+	
+	/*判断是否为2d单元*/
+	INTEGER num_nodes_element						/*单元节点数*/
+	INTEGER id_nodes_element(4)						/*该单元相连的节点ID,无用变量*/
+	
+	btm_2d_elem_num=0
+	sys_allocate_array(btm_2d_elem_id,1,btm_elem_num)
+	
+	FOR(m=1 TO btm_elem_num)
+		db_get_elem_nodes(btm_elem_id(m),num_nodes_element,id_nodes_element)
+		IF((num_nodes_element==3)||(num_nodes_element==4))THEN
+			btm_2d_elem_num=btm_2d_elem_num+1
+			btm_2d_elem_id(btm_2d_elem_num)=btm_elem_id(m)
+		END IF
+	END FOR
+	
+	sys_reallocate_array(btm_2d_elem_id,1,btm_2d_elem_num)
+	
+	/*获取当前组ID*/
+	db_get_group_id(shell,shell_id)
+	
+	/*获取当前组单元数*/
+	db_count_elems_in_group(shell_id,shell_elem_num)
+	
+	/*获取组内单元ID*/
+	sys_allocate_array(shell_elem_id,1,shell_elem_num)
+	db_get_elem_ids_in_group(shell_elem_num,shell_id,shell_elem_id)
+	
+	/*判断是否为2d单元*/
+	
+	shell_2d_elem_num=0
+	sys_allocate_array(shell_2d_elem_id,1,shell_elem_num)
+	
+	FOR(m=1 TO shell_elem_num)
+		db_get_elem_nodes(shell_elem_id(m),num_nodes_element,id_nodes_element)
+		IF((num_nodes_element==3)||(num_nodes_element==4))THEN
+			shell_2d_elem_num=shell_2d_elem_num+1
+			shell_2d_elem_id(shell_2d_elem_num)=shell_elem_id(m)
+		END IF
+	END FOR
+	
+	sys_reallocate_array(shell_2d_elem_id,1,shell_2d_elem_num)
+	
+
+	app_int_array_to_vstring("Elm",btm_2d_elem_num,btm_2d_elem_id,btm_string)
+	app_int_array_to_vstring("Elm",shell_2d_elem_num,shell_2d_elem_id,shell_string)
+	
+	/*获取组内单元ID数组,单元ID字符串*/
+
+    STRING sv_temp[VIRTUAL]
+    sv_temp = btm_string//" "//shell_string
+    uil_list_union_expr("C",sv_temp,"",btm_shell_elem_string)
+    
+	REAL centroid(VIRTUAL)
+	INTEGER c						/*单元数*/
+
+/*批量获得单元形心,数组编号从1开始*/
+	fem_geom_elem_location(btm_shell_elem_string,centroid,c)
+    sys_allocate_array(btm_shell_elem_id,1,c)
+    fem_u_get_id_list(1024,btm_shell_elem_string,c,TRUE,btm_shell_elem_id)
+
+	btm_shell_elem_num=c
+
+/*对单元形心划分肋位*/
+	INTEGER i
+	
+	sys_allocate_array(frame_x,1,c)
+	
+	FOR(i=1 TO c)
+		
+		frame_x(i)=(centroid(i,1)-frame0)/frame_distance+1
+		
+	END FOR
+
+/*获得合力、合力矩算式中压强前的乘数,只进行一次运算,迭代中为常数*/
+	REAL normal(VIRTUAL)				/*法向的相反数*/
+	
+	sys_allocate_array(area_normal_z,1,c)
+	sys_allocate_array(area_normal_y,1,c)
+	sys_allocate_array(area_normal_z_y,1,c)
+	sys_allocate_array(area_normal_z_x,1,c)
+	sys_allocate_array(area_normal_y_z,1,c)
+	sys_allocate_array(normal,1,3)
+	
+	REAL area
+	
+	FOR(k=1 TO c)
+		lbc_get_shell_area(btm_shell_elem_id(k),area)
+		lbc_get_shell_normal(btm_shell_elem_id(k),normal)
+		
+		area_normal_y(k)=area*normal(2)/sqrt(normal(1)**2+normal(2)**2+normal(3)**2)
+		area_normal_z(k)=area*normal(3)/sqrt(normal(1)**2+normal(2)**2+normal(3)**2)
+		
+		area_normal_z_x(k)=area_normal_z(k)*(moment_x_location-centroid(k,1))
+		area_normal_z_y(k)=area_normal_z(k)*(-centroid(k,2))					
+		area_normal_y_z(k)=area_normal_y(k)*(moment_z_location-centroid(k,3))						
+	END FOR
+
+END FUNCTION
+
+/**********************************************************/
+/********							          *************/
+/********		舷外水压力的f与m			  *************/
+/********		 	（重复执行）			  *************/
+/**********************************************************/
+
+
+/*input:舷外水压力load ID*/
+/*本函数会被反复调用,故需要将前面的获取信息的操作提取到控制台,避免重复操作*/
+
+FUNCTION water_f_m(water_pressure_load_id,btm_shell_elem_num,f_water,m_water,f_water_frame,m_water_frame)
+
+	INTEGER btm_shell_elem_num					/*合并组单元数*/
+	
+	REAL f_water_frame() 
+    REAL m_water_frame() 
+	
+	REAL element_pressure(VIRTUAL)
+	INTEGER water_pressure_load_id									/*input*/
+	INTEGER frame_num
+
+	/*VBA*/
+	frame_num=ip_frame_num
+	sys_allocate_array(element_pressure,1,btm_shell_elem_num)
+	
+	db_get_all_fem_ss_by_id(water_pressure_load_id)
+
+	INTEGER e_entity_type
+	INTEGER e_sub_entity_id
+	INTEGER e_node_position
+	INTEGER e_region_type
+	REAL e_scale_factor
+	INTEGER k
+
+	FOR(k=1 TO btm_shell_elem_num)
+		db_get_next_fem_ss_by_id(water_pressure_load_id,@
+								e_entity_type,			@
+								btm_shell_elem_id(k),	@
+								e_sub_entity_id,		@
+								element_pressure(k),	@
+								e_scale_factor,      	@
+            					e_node_position,        @
+           						e_region_type)
+	END FOR
+
+	FOR(k=1 TO frame_num)
+		f_water_frame(k)=0
+		m_water_frame(k)=0
+	END FOR
+
+	FOR(k=1 TO btm_shell_elem_num)
+
+		f_water_frame(frame_x(k))=f_water_frame(frame_x(k))+area_normal_z(k)*element_pressure(k)
+		m_water_frame(frame_x(k))=m_water_frame(frame_x(k))+area_normal_z_x(k)*element_pressure(k)
+
+	END FOR
+
+/*合力,合力矩*/
+	REAL f_water
+	REAL m_water
+
+		f_water=0
+		m_water=0
+			
+	FOR(k=1 TO frame_num)
+		f_water=f_water+f_water_frame(k)
+		m_water=m_water+m_water_frame(k)
+	END FOR
+
+END FUNCTION
+
+
+/**********************************************************/
+/********							          *************/
+/********		舷外水压力的mx				  *************/
+/********		 	（重复执行）			  *************/
+/**********************************************************/
+
+
+/*input:舷外水压力load ID*/
+/*本函数会被反复调用,故需要将前面的获取信息的操作提取到控制台,避免重复操作*/
+
+FUNCTION water_mx(water_pressure_load_id,btm_shell_elem_num,mx_water,mx_water_frame)
+
+	INTEGER btm_shell_elem_num					/*合并组单元数*/
+	
+	REAL mx_water_frame()
+	
+	REAL element_pressure(VIRTUAL)
+	INTEGER water_pressure_load_id									/*input*/
+	INTEGER frame_num
+
+	/*VBA*/
+	frame_num=ip_frame_num
+	sys_allocate_array(element_pressure,1,btm_shell_elem_num)
+	
+	db_get_all_fem_ss_by_id(water_pressure_load_id)
+
+	INTEGER e_entity_type
+	INTEGER e_sub_entity_id
+	INTEGER e_node_position
+	INTEGER e_region_type
+	REAL e_scale_factor
+	INTEGER k
+	
+	FOR(k=1 TO btm_shell_elem_num)
+		db_get_next_fem_ss_by_id(water_pressure_load_id,@
+								e_entity_type,			@
+								btm_shell_elem_id(k),	@
+								e_sub_entity_id,		@
+								element_pressure(k),	@
+								e_scale_factor,      	@
+            					e_node_position,        @
+           						e_region_type)
+	END FOR
+
+	FOR(k=1 TO frame_num)
+		mx_water_frame(k)=0
+	END FOR
+
+	FOR(k=1 TO btm_shell_elem_num)
+		mx_water_frame(frame_x(k))=mx_water_frame(frame_x(k))+(-area_normal_z_y(k)+area_normal_y_z(k))*element_pressure(k)
+	END FOR
+
+/*合力,合力矩*/
+	REAL mx_water
+
+		mx_water=0
+			
+	FOR(k=1 TO frame_num)
+		mx_water=mx_water+mx_water_frame(k)
+	END FOR
+
+END FUNCTION
+
+
+	/**********************************************************/
+	/********							          *************/
+	/********			创建空壳场函数			  *************/
+	/********									  *************/
+	/**********************************************************/
+	FUNCTION create_field(loadcase_name)
+		STRING loadcase_name[]
+
+			fields_create(loadcase_name, "Spatial", 1, "Scalar", "Real", "Coord 0", "", "Function", 0,@
+							"", "", "","1" , "", "", FALSE, [0.], [0.], [0.], [[[0.]]] )
+			fields_create(loadcase_name//"_try1", "Spatial", 1, "Scalar", "Real", "Coord 0", "", "Function", 0,@
+							"", "", "","1" , "", "", FALSE, [0.], [0.], [0.], [[[0.]]] )
+			fields_create(loadcase_name//"_try2", "Spatial", 1, "Scalar", "Real", "Coord 0", "", "Function", 0,@
+							"", "", "","1" , "", "", FALSE, [0.], [0.], [0.], [[[0.]]] )
+
+	END FUNCTION
+
+	/**********************************************************/
+	/********							          *************/
+	/********	创建工况，创建载荷				  *************/
+	/********									  *************/
+	/**********************************************************/
+	FUNCTION create_load(loadcase_name,loadcase_id,cargocase_i,water_id,water_id_try1,water_id_try2,field_id,field_id_try1,field_id_try2)
+		INTEGER i					/*循环变量*/
+		INTEGER r					/*循环变量*/				
+		
+		/*各工况的载况、中拱_静水_中垂、浪向角、吃水、纵倾、横倾   VBA*/
+		STRING loadcase_name[]()
+		INTEGER loadcase_num									/*待求合力、合力矩工况数量*/
+		INTEGER loadcase_id()									/*工况ID*/
+		INTEGER loadcase_flag(VIRTUAL)							/*工况的波浪形式*/
+		STRING cargocase_name[32](VIRTUAL)
+		INTEGER hog_st_sag(VIRTUAL)								/*hog=-1,st=0,sag=1*/
+		REAL d_loadcase(VIRTUAL)								/*吃水*/
+		REAL a_loadcase(VIRTUAL)								/*纵倾*/
+		REAL angle(VIRTUAL)										/*浪向角*/
+		REAL theta(VIRTUAL)										/*横倾角*/
+		INTEGER cargocase_i()										/*工况对应的载况在static_load中对应的数组号i*/
+
+		/*VBA*/		
+		loadcase_num=ip_loadcase_num
+
+		sys_allocate_array(cargocase_name,1,loadcase_num)
+		sys_allocate_array(hog_st_sag,1,loadcase_num)
+		sys_allocate_array(angle,1,loadcase_num)
+		sys_allocate_array(d_loadcase,1,loadcase_num)
+		sys_allocate_array(a_loadcase,1,loadcase_num)
+		sys_allocate_array(theta,1,loadcase_num)
+	
+		
+		
+		/*VBA,angle必须加“.0”*/				
+        FOR(i=1 TO loadcase_num)
+            cargocase_name(i)=ip_all_cargocase_name(ip_cargocase_i(i))
+	    	cargocase_i(i)=ip_cargocase_i(i)
+	    	hog_st_sag(i)=ip_flag(i)
+    		angle(i)=ip_ini_angle(i)
+    		d_loadcase(i)=ip_ini_d(i)
+    		a_loadcase(i)=ip_ini_a(i)
+    		theta(i)=ip_ini_ax(i)
+        END FOR
+					
+		/*根据载况、中拱_静水_中垂生成工况*/
+		INTEGER cargocase_id
+		REAL load_case_scale_factor
+		INTEGER cargocase_type
+		STRING cargocase_description[VIRTUAL]
+		INTEGER num_loads
+		INTEGER load_ids(VIRTUAL)
+		REAL load_scale_factor(VIRTUAL)
+		STRING dynamic_case_name[VIRTUAL]
+		REAL evaluation_point
+		INTEGER load_priorities_main(VIRTUAL)
+		
+		STRING str_load_name[32](VIRTUAL)						/*载荷名字符串*/
+		REAL lbc_scale(VIRTUAL)
+		
+		STRING flag[5](1:3)
+		
+		INTEGER max_num_loads
+		
+		
+		flag(1)="hog"
+		flag(2)="st"
+		flag(3)="sag"
+		
+		max_num_loads=2
+		
+		/*得到所有载况中的最大载荷数*/
+		FOR(i=1 TO loadcase_num)		
+			db_count_lbc_by_load_case(cargocase_name(i),num_loads)
+		
+			IF(num_loads>max_num_loads)THEN
+				max_num_loads=num_loads
+			END IF
+			
+		END FOR
+	
+		/*为数组赋大小*/
+		
+		sys_allocate_array(load_ids,1,max_num_loads)
+		sys_allocate_array(load_scale_factor,1,max_num_loads)
+		sys_allocate_array(load_priorities_main,1,max_num_loads)
+		
+		sys_allocate_array(loadcase_flag,1,loadcase_num)
+	
+		/*舷外水压力load ID,1维数组,（工况ID）值*/
+		INTEGER water_id()
+		INTEGER water_id_try1()
+		INTEGER water_id_try2()
+		INTEGER field_id()
+		INTEGER field_id_try1()
+		INTEGER field_id_try2()
+		STRING field_array[32](VIRTUAL)				/*预定义函数的变量，数组*/
+		STRING field_array_try1[32](VIRTUAL)		/*预定义函数的变量，数组*/
+		STRING field_array_try2[32](VIRTUAL)		/*预定义函数的变量，数组*/
+		STRING btm_shell_elem_string_array[655350](1)
+		
+
+		sys_allocate_array(field_array,1,3)
+		sys_allocate_array(field_array_try1,1,3)
+		sys_allocate_array(field_array_try2,1,3)
+		
+		btm_shell_elem_string_array(1)=btm_shell_elem_string
+	
+		FOR(i=1 TO loadcase_num)
+			
+			db_get_load_case2(cargocase_name(i),cargocase_id,load_case_scale_factor,cargocase_type,cargocase_description,@
+							num_loads,load_ids,load_scale_factor,load_priorities_main,dynamic_case_name,evaluation_point)
+			
+			sys_allocate_array(str_load_name,1,num_loads)
+			sys_allocate_array(lbc_scale,1,num_loads)
+			
+			FOR(r=1 TO num_loads)
+				db_get_lbc_name(load_ids(r),str_load_name(r))
+				
+				lbc_scale(r)=1
+				
+			END FOR	
+			
+			INTEGER int_angle
+
+			int_angle=angle(i)
+			
+			loadcase_name(i)=cargocase_name(i)//"_"//flag(hog_st_sag(i)+2)//"_deg"//str_from_integer(int_angle)
+			
+			loadcase_flag(i)=hog_st_sag(i)+2
+				
+			loadcase_create(loadcase_name(i),"Static",cargocase_description,str_load_name,load_priorities_main,"",0.,TRUE)													
+			
+			db_get_load_case_id(loadcase_name(i),loadcase_id(i))
+			
+			e.create_field(loadcase_name(i))
+			
+			db_get_field_id(loadcase_name(i),field_id(i))
+			db_get_field_id(loadcase_name(i)//"_try1",field_id_try1(i))
+			db_get_field_id(loadcase_name(i)//"_try2",field_id_try2(i))
+			
+			field_array(1)="f:"//loadcase_name(i)
+			field_array_try1(1)="f:"//loadcase_name(i)//"_try1"
+			field_array_try2(1)="f:"//loadcase_name(i)//"_try2"	
+			
+			loadsbcs_create2(loadcase_name(i),"Pressure","Element Uniform","2D","Static",btm_shell_elem_string_array,"FEM","",@
+							"1.0",field_array,["", "", ""] )														
+			loadsbcs_create2(loadcase_name(i)//"_try1","Pressure","Element Uniform","2D","Static",btm_shell_elem_string_array,"FEM","",@
+							"1.0",field_array_try1,["", "", ""] )
+			loadsbcs_create2(loadcase_name(i)//"_try2","Pressure","Element Uniform","2D","Static",btm_shell_elem_string_array,"FEM","",@
+							"1.0",field_array_try2,["", "", ""] )
+			
+			/*记录各工况、各波浪的舷外水压力载荷ID*/	
+			db_get_lbc_id(loadcase_name(i),water_id(i))
+			db_get_lbc_id(loadcase_name(i)//"_try1",water_id_try1(i))
+			db_get_lbc_id(loadcase_name(i)//"_try2",water_id_try2(i))	
+										
+		END FOR
+
+	END FUNCTION
+
+	/**********************************************************/
+	/********							          *************/
+	/********		field的修改(重新生成)		  *************/
+	/********									  *************/
+	/**********************************************************/
+	
+	/*每次调用时,输入工况ID、吃水、纵倾、横倾、浪向角、中拱中垂*/
+	/*波长与波高为常数,由VBA输入*/	       
+	FUNCTION modify_field(field_id,d,a,ax,angle_real,l,x0,flag)
+		
+		REAL bx										/*浮心x坐标*/
+		REAL d										/*吃水*/									/*输入*/
+		REAL a										/*纵倾角（弧度）*/							/*输入*/
+		REAL ax										/*横倾角（弧度）*/							/*输入*/
+		REAL angle_real								/*浪向角（角度）*/
+		REAL l										/*波长*/
+		REAL x0										/*波浪原点*/
+		REAL h										/*全波高*/									/*输入*/
+		
+		INTEGER field_id							/*工况ID*/									/*输入*/
+		STRING field_name[32]						/*工况名*/
+		INTEGER field_var							/*预定义函数要求*/
+		
+		INTEGER flag								/*指示静水0、中拱-1、中垂1*/				/*输入*/
+		STRING str_flag[5](VIRTUAL)					/*字符串表示指示静水、中拱、中垂*/
+		REAL p										/*水密度,kg/mm^3*/
+		
+		
+		
+	/*赋初值（此处将由函数之间的传递值取代）*/
+		bx=ip_rox			/*目前方法比较笼统，不过够用了*/
+		h=ip_h				/*全波高*/
+		p=ip_p			    /*VBA*/	
+		
+		sys_allocate_array(str_flag,-1,1)
+		str_flag(0)="st"
+		str_flag(1)="sag"
+		str_flag(-1)="hog"
+		
+	/*获取field名*/
+		db_get_field_name(field_id,field_name,field_var)
+
+		fields_modify(field_name,field_name, "Spatial", 1, "Scalar", "Real", "Coord 0",@
+					 "", "Function", 3, "X", "Y", "Z",@
+					 "max(0,"//str_from_real(p)//"*9.81*("//str_from_real(d)//"+"//str_from_real(h)// @
+					"*("//str_from_integer(flag)//")*0.5*cosr(6.2832/"//str_from_real(l)//"*(("//str_from_real(mth_cosd(angle_real))//")*'x+("//str_from_real(mth_sind(angle_real))//")*'y-("//str_from_real(x0)//")))+("// @ 
+					str_from_real(a)//")*('X-"//str_from_real(bx)//")-'z+("//str_from_real(ax)//")*'y))",@
+					  "", "", FALSE, [0.], [0.], [0.], [[[0.]]] )
+
+	END FUNCTION
+
+	/*获取模型中所有单元和节点位置的函数(与单元ID一一对应)*//*已检查*/
+	FUNCTION node_ele_positions()
+		REAL node_positions_temp(VIRTUAL)
+		REAL element_positions_temp(VIRTUAL)
+		INTEGER ref_coords(VIRTUAL)
+		INTEGER analy_coords(VIRTUAL)
+		STRING str_element_ids[VIRTUAL]
+		INTEGER entity_count
+		INTEGER i
+				
+		/*获取节点位置*/
+		db_count_nodes(cw_num_nodes)
+		sys_allocate_array(cw_node_ids , 1 , cw_num_nodes)
+		sys_allocate_array(node_positions_temp , 1, cw_num_nodes , 1 , 3)
+		sys_allocate_array(ref_coords , 1 , cw_num_nodes)
+		sys_allocate_array(analy_coords , 1 , cw_num_nodes)		
+		db_get_node_ids(cw_num_nodes , cw_node_ids)
+		db_get_nodes(cw_num_nodes , cw_node_ids , ref_coords , analy_coords , node_positions_temp)
+		
+		/*获取单元位置*/
+		db_count_elems(cw_num_elements)
+		sys_allocate_array(cw_element_ids , 1 , cw_num_elements)
+		db_get_elem_ids(cw_num_elements , cw_element_ids)
+		app_int_array_to_vstring("Elm" , cw_num_elements , cw_element_ids , str_element_ids)
+		fem_geom_elem_location(str_element_ids , element_positions_temp , entity_count)
+		
+		/*使单元节点编号与其位置对应*/
+		sys_allocate_array(cw_node_positions , 1 , cw_node_ids(cw_num_nodes) , 1 , 3)
+		sys_allocate_array(cw_element_positions , 1 , cw_element_ids(cw_num_elements) , 1 , 3)
+		FOR(i = 1 TO cw_num_nodes)
+			cw_node_positions(cw_node_ids(i) , 1) = node_positions_temp(i , 1)
+			cw_node_positions(cw_node_ids(i) , 2) = node_positions_temp(i , 2)
+			cw_node_positions(cw_node_ids(i) , 3) = node_positions_temp(i , 3)
+		END FOR
+		FOR(i = 1 TO cw_num_elements)
+			cw_element_positions(cw_element_ids(i) , 1) = element_positions_temp(i , 1)
+			cw_element_positions(cw_element_ids(i) , 2) = element_positions_temp(i , 2)
+			cw_element_positions(cw_element_ids(i) , 3) = element_positions_temp(i , 3)
+		END FOR		
+	
+	END FUNCTION
+	
+	/*求一个load力与力矩（取计算点）的函数*//*已检查*/
+	FUNCTION one_lbc_resultant(calculate_point , load_id , one_load_resultant)
+		REAL calculate_point()
+		INTEGER load_id
+		REAL one_load_resultant()
+		
+		STRING load_name[32]
+		INTEGER load_type
+		INTEGER application_type
+		INTEGER elem_dimension
+		INTEGER coord_id
+		INTEGER dynamic_flag
+		INTEGER num_values
+		INTEGER i
+		INTEGER load_var_id
+		INTEGER entity_type
+		INTEGER entity_id
+		INTEGER sub_entity_id
+		REAL load_value(3)
+		INTEGER null_vector(3)
+		REAL scale_factor
+		INTEGER node_position
+		INTEGER region_type
+		REAL load_value_S
+		REAL element_area
+		REAL element_normal(3)
+		REAL sqrt_element_normal
+		REAL temp_x
+		REAL temp_y
+		REAL temp_z
+		REAL mass_prop_mass_props_array(VIRTUAL)
+		STRING mass_prop_entity_list[VIRTUAL]
+		STRING mass_prop_reject_list[VIRTUAL]
+		INTEGER mass_prop_noutputs
+		STRING mass_prop_gnames_out[32](VIRTUAL)
+		INTEGER mass_prop_entities(VIRTUAL)
+		INTEGER mass_prop_entity_types(VIRTUAL)
+		INTEGER mass_prop_len_elist
+		INTEGER mass_prop_num_ents
+		INTEGER mass_prop_len_rlist
+		INTEGER mass_prop_num_rejects
+		INTEGER mass_prop_segment_id
+		INTEGER mass_prop_cord_label
+		INTEGER mass_prop_user_cord_label
+		INTEGER bk_nbr
+		INTEGER bk_vid(1)
+		REAL bk_rv(1,3)
+		INTEGER bk_ve_pos(1,3)
+		INTEGER bk_nv(1,3)
+		REAL bk_scale_factor(1)
+		INTEGER n_i_status /*表征函数是否执行，解决计算利用csv离散场生成的force或pressure时的BUG*/
+		
+		db_get_lbc(load_id , load_name , load_type , application_type , @
+					elem_dimension , coord_id , dynamic_flag)/*获取Load信息*/		
+		FOR(i = 1 TO 6)
+			one_load_resultant(i) = 0.0
+		END FOR
+		IF(load_type == 7)THEN/*7为force*/
+			db_get_lbc_fem_count(load_id , num_values)
+			db_get_all_fem_sv_by_id(load_id)
+			FOR(i = 1 TO num_values)
+				n_i_status = db_get_next_fem_sv_by_id(load_var_id , entity_type , entity_id , @
+															sub_entity_id , load_value , null_vector , @
+															scale_factor , node_position , region_type)
+				IF((n_i_status == 0) && (entity_id > 0))THEN
+					IF(load_var_id == 1)THEN
+						one_load_resultant(1) += load_value(1) * scale_factor
+						one_load_resultant(2) += load_value(2) * scale_factor
+						one_load_resultant(3) += load_value(3) * scale_factor
+						one_load_resultant(4) += (cw_node_positions(entity_id , 2) - calculate_point(2)) * load_value(3) * scale_factor - (cw_node_positions(entity_id , 3) - calculate_point(3)) * load_value(2) * scale_factor
+						one_load_resultant(5) += (cw_node_positions(entity_id , 3) - calculate_point(3)) * load_value(1) * scale_factor - (cw_node_positions(entity_id , 1) - calculate_point(1)) * load_value(3) * scale_factor
+						one_load_resultant(6) += (cw_node_positions(entity_id , 1) - calculate_point(1)) * load_value(2) * scale_factor - (cw_node_positions(entity_id , 2) - calculate_point(2)) * load_value(1) * scale_factor
+					ELSE IF(load_var_id == 2)THEN
+						one_load_resultant(4) += load_value(1) * scale_factor
+						one_load_resultant(5) += load_value(2) * scale_factor
+						one_load_resultant(6) += load_value(3) * scale_factor
+					END IF
+				END IF
+			END FOR								
+		ELSE IF(load_type == 8)THEN/*8为pressure*/
+			db_get_lbc_fem_count(load_id , num_values)
+			db_get_all_fem_ss_by_id(load_id)
+			FOR(i = 1 TO num_values)
+				n_i_status = db_get_next_fem_ss_by_id(load_var_id , entity_type , entity_id , @
+										sub_entity_id , load_value_s , scale_factor , @
+										node_position , region_type)
+				IF((n_i_status == 0) && (entity_id > 0))THEN
+					IF(entity_type == 124)THEN
+						lbc_get_shell_area(entity_id , element_area)
+						lbc_get_shell_normal(entity_id , element_normal)
+						sqrt_element_normal = sqrt(element_normal(1)**2 + element_normal(2)**2 + element_normal(3)**2)
+						IF(load_var_id == 1)THEN
+							temp_x = load_value_s * element_area * element_normal(1) / sqrt_element_normal * scale_factor
+							temp_y = load_value_s * element_area * element_normal(2) / sqrt_element_normal * scale_factor
+							temp_z = load_value_s * element_area * element_normal(3) / sqrt_element_normal * scale_factor
+							one_load_resultant(1) += temp_x
+							one_load_resultant(2) += temp_y
+							one_load_resultant(3) += temp_z
+							one_load_resultant(4) += (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_z - (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_y
+							one_load_resultant(5) += (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_x - (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_z
+							one_load_resultant(6) += (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_y - (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_x
+						ELSE IF(load_var_id == 2)THEN
+							temp_x = load_value_s * element_area * element_normal(1) / sqrt_element_normal * scale_factor * -1
+							temp_y = load_value_s * element_area * element_normal(2) / sqrt_element_normal * scale_factor * -1
+							temp_z = load_value_s * element_area * element_normal(3) / sqrt_element_normal * scale_factor * -1
+							one_load_resultant(1) += temp_x
+							one_load_resultant(2) += temp_y
+							one_load_resultant(3) += temp_z
+							one_load_resultant(4) += (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_z - (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_y
+							one_load_resultant(5) += (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_x - (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_z
+							one_load_resultant(6) += (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_y - (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_x
+						END IF
+					ELSE IF(entity_type == 154)THEN
+						IF(load_var_id == 3)THEN
+							/*这部分是计算edge pressure的，不想写*/
+						END IF
+					ELSE IF(entity_type == 153)THEN
+						/*这部分是计算体单元face pressure的，不想写*/
+					END IF
+				END IF
+			END FOR
+		ELSE IF(load_type == 10)THEN/*10为inertial load,目前仅能计算线加速度部分*/
+			mass_prop.cleanup_detailed(mass_prop_mass_props_array,mass_prop_entity_list,mass_prop_reject_list)
+			mass_prop_create_detailed("3D", "All", "FEM", "Summary", 0, [""], "", "Coord 0", "Use Element Properties",@
+									"Use Element Properties","Coord 0",3,1,FALSE,FALSE,@
+									mass_prop_noutputs,mass_prop_gnames_out,mass_prop_entities,@
+									mass_prop_entity_types,mass_prop_mass_props_array,mass_prop_entity_list,@
+									mass_prop_len_elist,mass_prop_num_ents,mass_prop_reject_list,mass_prop_len_rlist,@
+									mass_prop_num_rejects,mass_prop_segment_id,mass_prop_cord_label,mass_prop_user_cord_label)
+			db_bulk_get_lbc_sv(load_id , 1 , bk_nbr , bk_vid , bk_rv , bk_ve_pos , bk_nv , bk_scale_factor)		
+			IF(bk_vid(1) == 1)THEN
+				one_load_resultant(1) = mass_prop_mass_props_array(1,2) * bk_rv(1,1) * bk_scale_factor(1)
+				one_load_resultant(2) = mass_prop_mass_props_array(1,2) * bk_rv(1,2) * bk_scale_factor(1)
+				one_load_resultant(3) = mass_prop_mass_props_array(1,2) * bk_rv(1,3) * bk_scale_factor(1)
+				one_load_resultant(4) = (mass_prop_mass_props_array(1,4) - calculate_point(2)) * mass_prop_mass_props_array(1,2) * bk_rv(1,3) * bk_scale_factor(1) - (mass_prop_mass_props_array(1,5) - calculate_point(3)) * mass_prop_mass_props_array(1,2) * bk_rv(1,2) * bk_scale_factor(1)
+				one_load_resultant(5) = (mass_prop_mass_props_array(1,5) - calculate_point(3)) * mass_prop_mass_props_array(1,2) * bk_rv(1,1) * bk_scale_factor(1) - (mass_prop_mass_props_array(1,3) - calculate_point(1)) * mass_prop_mass_props_array(1,2) * bk_rv(1,3) * bk_scale_factor(1)
+				one_load_resultant(6) = (mass_prop_mass_props_array(1,3) - calculate_point(1)) * mass_prop_mass_props_array(1,2) * bk_rv(1,2) * bk_scale_factor(1) - (mass_prop_mass_props_array(1,4) - calculate_point(2)) * mass_prop_mass_props_array(1,2) * bk_rv(1,1) * bk_scale_factor(1)
+			END IF
+		ELSE IF(load_type == 34)THEN/*34为distributed load*/
+			/*这部分是计算distributed load的，不想写*/
+		END IF
+	END FUNCTION
+		
+	/*求当前工况全船合力的函数*//*已检查*/
+	FUNCTION lbc_resultants(load_resultants)		
+		REAL calculate_point(3)
+		REAL load_resultants()
+		
+		STRING current_lc_name[32]
+		INTEGER load_case_id
+		REAL load_case_scale_fator
+		INTEGER load_case_type
+		STRING load_case_description[256]
+		INTEGER num_loads
+		INTEGER load_ids(VIRTUAL)
+		REAL load_scale_factors(VIRTUAL)
+		INTEGER load_priorities(VIRTUAL)
+		STRING dynamic_case_name[32]
+		REAL evaluation_point
+		INTEGER i
+		INTEGER j
+		STRING load_name[32]
+		INTEGER load_type
+		INTEGER application_type
+		INTEGER elem_dimension
+		INTEGER coord_id
+		INTEGER dynamic_flag
+		REAL one_load_resultant(6)
+		
+		calculate_point(1) = ip_moment_x_location
+		calculate_point(2) = 0.0
+		calculate_point(3) = ip_moment_z_location
+		
+		e.node_ele_positions()
+		
+		FOR(i = 1 TO 6)
+			load_resultants(i) = 0.0
+		END FOR
+		
+		db_get_active_load_case(current_lc_name)/*获取当前Load Case名*/
+		db_count_lbc_by_load_case(current_lc_name , num_loads)
+		sys_allocate_array(load_ids , 1 , num_loads)
+		sys_allocate_array(load_scale_factors , 1 , num_loads)
+		sys_allocate_array(load_priorities , 1 , num_loads)
+		db_get_load_case2(current_lc_name , load_case_id , load_case_scale_fator , @
+							load_case_type , load_case_description , num_loads , @
+							load_ids , load_scale_factors , load_priorities , @
+							dynamic_case_name , evaluation_point)/*获取当前Load Case信息*/
+		
+
+		loadsbcs_eval_all()
+		FOR(i = 1 TO num_loads)
+			db_get_lbc(load_ids(i) , load_name , load_type , application_type , @
+			elem_dimension , coord_id , dynamic_flag)/*获取Load信息*/
+			IF( load_type == 7 || load_type == 8 || load_type == 10 || load_type == 34)THEN
+				e.one_lbc_resultant(calculate_point , load_ids(i) , one_load_resultant)	
+				FOR(j = 1 TO 6)
+					load_resultants(j) += one_load_resultant(j) * load_case_scale_fator * load_scale_factors(i)
+				END FOR
+			END IF
+		END FOR	
+		
+		
+	END FUNCTION
+	
+	FUNCTION output(number,times,trace_f,trace_m,trace_mx)
+		INTEGER times()
+		REAL trace_f()
+		REAL trace_m()
+		REAL trace_mx()
+		INTEGER number
+		INTEGER i
+		
+		dump "调平结果输出："
+		dump "工况ID    z方向力    纵倾力矩    横倾力矩"
+		FOR (i=1 TO number)
+			dump str_from_integer(i)//"    "//str_from_real(trace_f(i,times(i)))//"    "//str_from_real(trace_m(i,times(i)))//"    "//str_from_real(trace_mx(i,times(i)))
+		END FOR
+		
+	END FUNCTION
+
+END CLASS

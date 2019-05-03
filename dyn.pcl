@@ -1,0 +1,2167 @@
+$	动平衡自动调整的PCL：
+$	1.第一次输入参数
+$	2.输入:					!!inp dyn.pcl		编译pcl
+$	3.输入：				d.step_one()		生成质量点
+$	4.第二次输入参数
+$	5.输入：				!!inp dyn.pcl		重新编译pcl
+$	6.输入:					d.step_two()		动平衡调整
+
+
+$	step_one()、step_two()、step_three()中均有输入项，务必要全部输入正确；
+
+/*	
+	v2更新记录：2017.01.02——2017.01.04
+	1.修正了空船惯性力及货舱剪力矩阵计算及加载的错误；ok
+	2.修正了计算舱室质量点及计算液舱参考点的错误；ok
+	3.修改了判断不需要计算单元的筛选条件，避免出现空的单元数组；ok
+	4.新增迭代调整step_three，提高计算结果的精度与可靠性；ok
+	5.新增判断，现在可以直接计算没有液舱或者货舱的情况；ok
+	6.将原先自动计算所有节点力改为只计算输入名字的节点力；ok
+	7.修改了生成的质量点、分组、惯性力及动载荷等的命名规则，方便在Patran中查看与选择；ok
+	8.现在会自动生成全船质量点和空船质量点的分组了；ok
+*/
+
+CLASS d
+
+	CLASSWIDE INTEGER mass_point_prop_id				/*用于舱室质量点属性的命名编号*/
+	
+	CLASSWIDE REAL pre_p_bd(VIRTUAL)					/*散货动压力预计算结果，二维数组，分别为每个单元对货舱重心处线加速度的系数*/
+	CLASSWIDE REAL Pbs_dx(VIRTUAL)						/*散货动切向力预计算结果，一维数组，分别为每个单元对货舱重心处线加速度的系数*/
+	CLASSWIDE REAL Pbs_dy(VIRTUAL)						/*Fy--ay*/
+	CLASSWIDE REAL Pbs_d (VIRTUAL)						/*Fx,Fy,Fz--az*/
+	
+	CLASSWIDE INTEGER element_id_array(VIRTUAL)
+	CLASSWIDE REAL element_pressure_array(VIRTUAL)
+	CLASSWIDE REAL element_area_array(VIRTUAL)
+	CLASSWIDE REAL element_normal_array(VIRTUAL)
+	CLASSWIDE REAL element_position_array(VIRTUAL)
+	
+	CLASSWIDE INTEGER cw_num_nodes
+	CLASSWIDE INTEGER cw_node_ids(VIRTUAL)
+	CLASSWIDE REAL cw_node_positions(VIRTUAL)
+	CLASSWIDE INTEGER cw_num_elements
+	CLASSWIDE INTEGER cw_element_ids(VIRTUAL)
+	CLASSWIDE REAL cw_element_positions(VIRTUAL)
+
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+	
+	/*函数step_one*/ 
+	/*运行此函数，生成用于质量模型的质量点*/
+	FUNCTION step_one()
+		
+		REAL gravity_a										/*重力加速度*/
+		
+		INTEGER empty_ship_force_num						/*模拟空船重力的force的数量，可将用节点力模拟的载荷都归为这一类*/
+		STRING empty_force_name_array[32](VIRTUAL)			/*模拟空船重力的force的名字list*/
+		
+		INTEGER cargo_num									/*货舱数量*/
+		REAL cargo_d_array(VIRTUAL)							/*货舱内货物密度list*/
+		
+		REAL cargo_m_array(VIRTUAL)							/*货舱内货物质量list*/
+		REAL cargo_b_array(VIRTUAL)							/*货舱内货物重心list*/
+		REAL cargo_t_array(VIRTUAL)							/*货舱内货物惯性张量list*/
+				
+		INTEGER cargo_pre_num								/*模拟货舱货物pressure的数量*/
+		STRING 	cargo_pre_name_array[32](VIRTUAL)			/*模拟货舱货物pressure的名字list*/
+		INTEGER cp_id(VIRTUAL)								/*模拟货舱货物pressure对应的货舱编号list*/
+		
+		INTEGER tank_num									/*液舱数量*/
+		REAL tank_d_array(VIRTUAL)							/*液舱内货物密度list*/
+		
+		REAL tank_m_array(VIRTUAL)							/*液舱内货物质量list*/
+		REAL tank_b_array(VIRTUAL)							/*液舱内货物重心list*/
+		REAL tank_t_array(VIRTUAL)							/*液舱内货物惯性张量list*/
+		
+		INTEGER tank_pre_num								/*模拟液舱货物pressure的数量*/
+		STRING 	tank_pre_name_array[32](VIRTUAL)			/*模拟液舱货物pressure的名字list*/
+		INTEGER tp_id(VIRTUAL)								/*模拟液舱货物pressure对应的液舱编号list*/
+		
+		REAL mass											/*pressure质量*/
+		REAL barycentre(3)									/*pressure重心*/
+		REAL inertial_tensor(3,3)							/*pressure惯性张量*/
+		
+		REAL temp_barycentre(3)
+		INTEGER i
+		
+		INTEGER all_mass_point_start
+		INTEGER all_mass_point_end
+		
+		/*需要输入：重力加速度,m/s^2*/
+		gravity_a=9.81
+		
+		/*需要输入：模拟空船重力的force的数量*/
+		empty_ship_force_num=33
+		
+		/*需要输入：舱室数量*/
+		cargo_num=0
+		tank_num=6
+		
+		/*需要输入：模拟舱室货物pressure的数量*/
+		cargo_pre_num=0
+		tank_pre_num=6
+		
+		sys_allocate_array(empty_force_name_array,1,empty_ship_force_num)
+		
+		IF(cargo_pre_num!=0)THEN
+			sys_allocate_array(cargo_d_array,1,cargo_num)
+			sys_allocate_array(cargo_m_array,1,cargo_num)
+			sys_allocate_array(cargo_b_array,1,cargo_num,1,3)
+			sys_allocate_array(cargo_t_array,1,cargo_num,1,3,1,3)
+			sys_allocate_array(cargo_pre_name_array,1,cargo_pre_num)
+			sys_allocate_array(cp_id,1,cargo_pre_num)
+		END IF
+		
+		IF(tank_pre_num!=0)THEN
+			sys_allocate_array(tank_d_array,1,tank_num)
+			sys_allocate_array(tank_m_array,1,tank_num)
+			sys_allocate_array(tank_b_array,1,tank_num,1,3)
+			sys_allocate_array(tank_t_array,1,tank_num,1,3,1,3)
+			sys_allocate_array(tank_pre_name_array,1,tank_pre_num)
+			sys_allocate_array(tp_id,1,tank_pre_num)
+		END IF
+		
+		/*需要输入：模拟空船重力的force的名字*/
+		empty_force_name_array(1)="w_01"
+		empty_force_name_array(2)="w_02"
+		empty_force_name_array(3)="w_03"
+		empty_force_name_array(4)="w_04"
+		empty_force_name_array(5)="w_05"
+		empty_force_name_array(6)="w_06"
+		empty_force_name_array(7)="w_07"
+		empty_force_name_array(8)="w_08"
+		empty_force_name_array(9)="w_09"
+		empty_force_name_array(10)="w_10"
+		empty_force_name_array(11)="w_11"
+		empty_force_name_array(12)="w_12"
+		empty_force_name_array(13)="w_13"
+		empty_force_name_array(14)="w_14"
+		empty_force_name_array(15)="w_15"
+		empty_force_name_array(16)="w_16"
+		empty_force_name_array(17)="w_17"
+		empty_force_name_array(18)="w_18"
+		empty_force_name_array(19)="w_19"
+		empty_force_name_array(20)="F_DD"
+		empty_force_name_array(21)="F_air"
+		empty_force_name_array(22)="F_axes"
+		empty_force_name_array(23)="F_caission"
+		empty_force_name_array(24)="F_cannonball"
+		empty_force_name_array(25)="F_engine"
+		empty_force_name_array(26)="F_food"
+		empty_force_name_array(27)="F_gearbox"
+		empty_force_name_array(28)="F_generator"
+		empty_force_name_array(29)="F_navalgun"
+		empty_force_name_array(30)="F_navalgun_rest"
+		empty_force_name_array(31)="F_pump"
+		empty_force_name_array(32)="F_stealth_cover"
+		empty_force_name_array(33)="F_windlass"
+		
+		/*需要输入：舱室内货物密度,kg/mm^3*/
+		tank_d_array(1)=0.84e-6
+		tank_d_array(2)=0.84e-6
+		tank_d_array(3)=0.84e-6
+		tank_d_array(4)=0.84e-6
+		tank_d_array(5)=1.0e-6
+		tank_d_array(6)=1.0e-6
+			
+		/*需要输入：模拟舱室货物pressure的名字及其对应的货舱编号*/
+		tank_pre_name_array(1)="p_fueloil_p"
+		tp_id(1)=1
+		
+		tank_pre_name_array(2)="p_fueloil_s"
+		tp_id(2)=2		
+
+		tank_pre_name_array(3)="p_oil_p"
+		tp_id(3)=3
+
+		tank_pre_name_array(4)="p_oil_s"
+		tp_id(4)=4
+		
+		tank_pre_name_array(5)="p_water_p"
+		tp_id(5)=5
+		
+		tank_pre_name_array(6)="p_water_s"
+		tp_id(6)=6
+		
+		/*获得各货舱质量、重心、惯性张量*/
+		IF(cargo_pre_num!=0)THEN
+			FOR(i=1 TO cargo_pre_num)
+				d.pressure_mass_barycentre_tensor(gravity_a,cargo_pre_name_array(i),cargo_d_array(cp_id(i)),mass,barycentre,inertial_tensor)
+				
+				temp_barycentre(1) = (cargo_m_array(cp_id(i)) * cargo_b_array(cp_id(i),1) + mass * barycentre(1)) / (cargo_m_array(cp_id(i)) + mass)
+				temp_barycentre(2) = (cargo_m_array(cp_id(i)) * cargo_b_array(cp_id(i),2) + mass * barycentre(2)) / (cargo_m_array(cp_id(i)) + mass)
+				temp_barycentre(3) = (cargo_m_array(cp_id(i)) * cargo_b_array(cp_id(i),3) + mass * barycentre(3)) / (cargo_m_array(cp_id(i)) + mass)
+				
+				cargo_t_array(cp_id(i),1,1) = cargo_t_array(cp_id(i),1,1) + inertial_tensor(1,1) @
+											+ cargo_m_array(cp_id(i)) * ( ( temp_barycentre(2) - cargo_b_array(cp_id(i),2) )**2 + ( temp_barycentre(3) - cargo_b_array(cp_id(i),3) )**2 ) @
+											+ mass * ( ( temp_barycentre(2) - barycentre(2) )**2 + ( temp_barycentre(3) - barycentre(3) )**2 )
+				
+				cargo_t_array(cp_id(i),2,2) = cargo_t_array(cp_id(i),2,2) + inertial_tensor(2,2) @
+											+ cargo_m_array(cp_id(i)) * ( ( temp_barycentre(1) - cargo_b_array(cp_id(i),1) )**2 + ( temp_barycentre(3) - cargo_b_array(cp_id(i),3) )**2 ) @
+											+ mass * ( ( temp_barycentre(1) - barycentre(1) )**2 + ( temp_barycentre(3) - barycentre(3) )**2 )
+				
+				cargo_t_array(cp_id(i),3,3) = cargo_t_array(cp_id(i),3,3) + inertial_tensor(3,3) @
+											+ cargo_m_array(cp_id(i)) * ( ( temp_barycentre(1) - cargo_b_array(cp_id(i),1) )**2 + ( temp_barycentre(2) - cargo_b_array(cp_id(i),2) )**2 ) @
+											+ mass * ( ( temp_barycentre(1) - barycentre(1) )**2 + ( temp_barycentre(2) - barycentre(2) )**2 )
+				
+				cargo_t_array(cp_id(i),2,1) = cargo_t_array(cp_id(i),2,1) + inertial_tensor(2,1) @
+											- cargo_m_array(cp_id(i)) * ( temp_barycentre(1) - cargo_b_array(cp_id(i),1) ) * ( temp_barycentre(2) - cargo_b_array(cp_id(i),2) ) @
+											- mass * ( temp_barycentre(1) - barycentre(1) ) * ( temp_barycentre(2) - barycentre(2) )
+				
+				cargo_t_array(cp_id(i),3,1) = cargo_t_array(cp_id(i),3,1) + inertial_tensor(3,1) @
+											- cargo_m_array(cp_id(i)) * ( temp_barycentre(1) - cargo_b_array(cp_id(i),1) ) * ( temp_barycentre(3) - cargo_b_array(cp_id(i),3) ) @
+											- mass * ( temp_barycentre(1) - barycentre(1) ) * ( temp_barycentre(3) - barycentre(3) )
+				
+				cargo_t_array(cp_id(i),3,2) = cargo_t_array(cp_id(i),3,2) + inertial_tensor(3,2) @
+											- cargo_m_array(cp_id(i)) * ( temp_barycentre(2) - cargo_b_array(cp_id(i),2) ) * ( temp_barycentre(3) - cargo_b_array(cp_id(i),3) ) @
+											- mass * ( temp_barycentre(2) - barycentre(2) ) * ( temp_barycentre(3) - barycentre(3) )
+				
+				cargo_b_array(cp_id(i),1) = temp_barycentre(1)
+				cargo_b_array(cp_id(i),2) = temp_barycentre(2)
+				cargo_b_array(cp_id(i),3) = temp_barycentre(3)
+				cargo_m_array(cp_id(i)) += mass
+			END FOR
+		END IF
+		
+		/*获得各液舱质量、重心、惯性张量*/
+		IF(tank_pre_num!=0)THEN
+			FOR(i=1 TO tank_pre_num)
+				d.pressure_mass_barycentre_tensor(gravity_a,tank_pre_name_array(i),tank_d_array(tp_id(i)),mass,barycentre,inertial_tensor)
+				
+				temp_barycentre(1) = (tank_m_array(tp_id(i)) * tank_b_array(tp_id(i),1) + mass * barycentre(1)) / (tank_m_array(tp_id(i)) + mass)
+				temp_barycentre(2) = (tank_m_array(tp_id(i)) * tank_b_array(tp_id(i),2) + mass * barycentre(2)) / (tank_m_array(tp_id(i)) + mass)
+				temp_barycentre(3) = (tank_m_array(tp_id(i)) * tank_b_array(tp_id(i),3) + mass * barycentre(3)) / (tank_m_array(tp_id(i)) + mass)
+				
+				tank_t_array(tp_id(i),1,1) = tank_t_array(tp_id(i),1,1) + inertial_tensor(1,1) @
+											+ tank_m_array(tp_id(i)) * ( ( temp_barycentre(2) - tank_b_array(tp_id(i),2) ) **2 + ( temp_barycentre(3) - tank_b_array(tp_id(i),3) ) **2 ) @
+											+ mass * ( ( temp_barycentre(2) - barycentre(2) ) **2 +  ( temp_barycentre(3) - barycentre(3) ) **2 )
+				
+				tank_t_array(tp_id(i),2,2) = tank_t_array(tp_id(i),2,2) + inertial_tensor(2,2) @
+											+ tank_m_array(tp_id(i)) * ( ( temp_barycentre(1) - tank_b_array(tp_id(i),1) ) **2 + ( temp_barycentre(3) - tank_b_array(tp_id(i),3) ) **2 ) @
+											+ mass * ( ( temp_barycentre(1) - barycentre(1) ) **2 +  ( temp_barycentre(3) - barycentre(3) ) **2 )
+				
+				tank_t_array(tp_id(i),3,3) = tank_t_array(tp_id(i),3,3) + inertial_tensor(3,3) @
+											+ tank_m_array(tp_id(i)) * ( ( temp_barycentre(1) - tank_b_array(tp_id(i),1) ) **2 + ( temp_barycentre(2) - tank_b_array(tp_id(i),2) ) **2 ) @
+											+ mass * ( ( temp_barycentre(1) - barycentre(1) ) **2 +  ( temp_barycentre(2) - barycentre(2) ) **2 )
+				
+				tank_t_array(tp_id(i),2,1) = tank_t_array(tp_id(i),2,1) + inertial_tensor(2,1) @
+											- tank_m_array(tp_id(i)) * ( temp_barycentre(1) - tank_b_array(tp_id(i),1) ) * ( temp_barycentre(2) - tank_b_array(tp_id(i),2) ) @
+											- mass * ( temp_barycentre(1) - barycentre(1) ) * ( temp_barycentre(2) - barycentre(2) )
+				
+				tank_t_array(tp_id(i),3,1) = tank_t_array(tp_id(i),3,1) + inertial_tensor(3,1) @
+											- tank_m_array(tp_id(i)) * ( temp_barycentre(1) - tank_b_array(tp_id(i),1) ) * ( temp_barycentre(3) - tank_b_array(tp_id(i),3) ) @
+											- mass * ( temp_barycentre(1) - barycentre(1) ) * ( temp_barycentre(3) - barycentre(3) )
+				
+				tank_t_array(tp_id(i),3,2) = tank_t_array(tp_id(i),3,2) + inertial_tensor(3,2) @
+											- tank_m_array(tp_id(i)) * ( temp_barycentre(2) - tank_b_array(tp_id(i),2) ) * ( temp_barycentre(3) - tank_b_array(tp_id(i),3) ) @
+											- mass * ( temp_barycentre(2) - barycentre(2) ) * ( temp_barycentre(3) - barycentre(3) )
+				
+				tank_b_array(tp_id(i),1) = temp_barycentre(1)
+				tank_b_array(tp_id(i),2) = temp_barycentre(2)
+				tank_b_array(tp_id(i),3) = temp_barycentre(3)
+				tank_m_array(tp_id(i)) += mass
+			END FOR
+		END IF
+		
+		db_get_max_elem_id(all_mass_point_start)
+		all_mass_point_start += 1				
+		ga_group_create("0000_mass_point_Loads")
+		mass_point_prop_id = 1
+		IF(cargo_pre_num!=0)THEN
+			d.creat_load_mass_point(cargo_num,cargo_m_array,cargo_b_array,cargo_t_array)
+		END IF
+		IF(tank_pre_num!=0)THEN
+			d.creat_load_mass_point(tank_num,tank_m_array,tank_b_array,tank_t_array)
+		END IF
+			
+		d.creat_empty_ship_mass_point(gravity_a,empty_ship_force_num,empty_force_name_array)
+		
+		db_get_max_elem_id(all_mass_point_end)
+		ga_group_create("0000_mass_point_All")
+		ga_group_entity_add("0000_mass_point_All", "Elm "//str_from_integer(all_mass_point_start)//":"//str_from_integer(all_mass_point_end))
+				
+	END FUNCTION
+
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+		
+	/*函数step_two*/
+	/*运行此函数，进行动第一次平衡调整*/
+	FUNCTION step_two()
+		
+		REAL all_barycentre(3)
+		STRING empty_mass_point_group_name[32]
+		
+		REAL empty_ship_barycentre(3)
+		REAL empty_ship_inertia_tensor(3,3)
+		REAL empty_ship_mass
+		
+		REAL fx_cg
+		REAL fy_cg
+		REAL fz_cg
+		REAL mx_cg
+		REAL my_cg
+		REAL mz_cg
+		REAL load_resultants(6)
+		REAL acc_aandr_temp(6)
+		
+		REAL gravity_a										/*重力加速度*/
+		
+		INTEGER empty_ship_force_num						/*模拟空船重力的force的数量，可将用节点力模拟的载荷都归为这一类*/
+		STRING empty_force_name_array[32](VIRTUAL)			/*模拟空船重力的force的名字list*/
+		
+		INTEGER cargo_num									/*货舱数量*/
+		REAL cargo_d_array(VIRTUAL)							/*货舱内货物密度list*/
+		REAL cargo_repose_angle(VIRTUAL)					/*货舱内货物休止角list*/
+		REAL cargo_m_array(VIRTUAL)							/*货舱内货物质量list*/
+		REAL cargo_b_array(VIRTUAL)							/*货舱内货物重心list*/
+				
+		INTEGER cargo_pre_num								/*模拟货舱货物pressure的数量*/
+		STRING 	cargo_pre_name_array[32](VIRTUAL)			/*模拟货舱货物pressure的名字list*/
+		INTEGER cp_id(VIRTUAL)								/*模拟货舱货物pressure对应的货舱编号list*/
+		
+		INTEGER tank_num									/*液舱数量*/
+		REAL tank_d_array(VIRTUAL)							/*液舱内货物密度list*/
+		REAL tank_m_array(VIRTUAL)							/*液舱内货物质量list*/
+		REAL tank_b_array(VIRTUAL)							/*液舱内货物重心list*/
+		
+		INTEGER tank_pre_num								/*模拟液舱货物pressure的数量*/
+		STRING 	tank_pre_name_array[32](VIRTUAL)			/*模拟液舱货物pressure的名字list*/
+		INTEGER tp_id(VIRTUAL)								/*模拟液舱货物pressure对应的液舱编号list*/
+		
+		REAL mass
+		REAL barycentre(3)
+		INTEGER i
+		INTEGER j
+		INTEGER k
+				
+		REAL empty_ship_response_matrix(6,6)
+		REAL cargo_response_matrix(6,6)
+		REAL tank_response_matrix(6,6)
+		REAL acceleration_matrix(6)
+		
+		REAL reference_point_possible(VIRTUAL)
+		INTEGER element_num_new
+		REAL max_vj(VIRTUAL)
+		REAL vj_temp
+		REAL reference_point(VIRTUAL)
+		REAL a_xyz_temp(3)
+		REAL matrix_temp(6,6)
+		
+		/*需要输入：重力加速度,m/s^2*/
+		gravity_a=9.81
+		
+		/*需要输入：模拟空船重力的force的数量*/
+		empty_ship_force_num=33
+		
+		/*需要输入：舱室数量*/
+		cargo_num=0
+		tank_num=6
+		
+		/*需要输入：模拟舱室货物pressure的数量*/
+		cargo_pre_num=0
+		tank_pre_num=6
+		
+		sys_allocate_array(empty_force_name_array,1,empty_ship_force_num)
+		
+		IF(cargo_pre_num!=0)THEN
+			sys_allocate_array(cargo_d_array,1,cargo_num)
+			sys_allocate_array(cargo_repose_angle,1,cargo_num)
+			sys_allocate_array(cargo_m_array,1,cargo_num)
+			sys_allocate_array(cargo_b_array,1,cargo_num,1,3)
+			sys_allocate_array(cargo_pre_name_array,1,cargo_pre_num)
+			sys_allocate_array(cp_id,1,cargo_pre_num)
+		END IF
+		
+		IF(tank_pre_num!=0)THEN
+			sys_allocate_array(tank_d_array,1,tank_num)
+			sys_allocate_array(tank_m_array,1,tank_num)
+			sys_allocate_array(tank_b_array,1,tank_num,1,3)
+			sys_allocate_array(tank_pre_name_array,1,tank_pre_num)
+			sys_allocate_array(tp_id,1,tank_pre_num)
+			
+			sys_allocate_array(reference_point,1,tank_num,1,3)
+			sys_allocate_array(max_vj,1,tank_num)
+		END IF
+		
+		/*需要输入：货舱内货物休止角,°度*/
+				
+		/*需要输入：模拟空船重力的force的名字*/
+		empty_force_name_array(1)="w_01"
+		empty_force_name_array(2)="w_02"
+		empty_force_name_array(3)="w_03"
+		empty_force_name_array(4)="w_04"
+		empty_force_name_array(5)="w_05"
+		empty_force_name_array(6)="w_06"
+		empty_force_name_array(7)="w_07"
+		empty_force_name_array(8)="w_08"
+		empty_force_name_array(9)="w_09"
+		empty_force_name_array(10)="w_10"
+		empty_force_name_array(11)="w_11"
+		empty_force_name_array(12)="w_12"
+		empty_force_name_array(13)="w_13"
+		empty_force_name_array(14)="w_14"
+		empty_force_name_array(15)="w_15"
+		empty_force_name_array(16)="w_16"
+		empty_force_name_array(17)="w_17"
+		empty_force_name_array(18)="w_18"
+		empty_force_name_array(19)="w_19"
+		empty_force_name_array(20)="F_DD"
+		empty_force_name_array(21)="F_air"
+		empty_force_name_array(22)="F_axes"
+		empty_force_name_array(23)="F_caission"
+		empty_force_name_array(24)="F_cannonball"
+		empty_force_name_array(25)="F_engine"
+		empty_force_name_array(26)="F_food"
+		empty_force_name_array(27)="F_gearbox"
+		empty_force_name_array(28)="F_generator"
+		empty_force_name_array(29)="F_navalgun"
+		empty_force_name_array(30)="F_navalgun_rest"
+		empty_force_name_array(31)="F_pump"
+		empty_force_name_array(32)="F_stealth_cover"
+		empty_force_name_array(33)="F_windlass"
+		
+		/*需要输入：舱室内货物密度,kg/mm^3*/
+		tank_d_array(1)=0.84e-6
+		tank_d_array(2)=0.84e-6
+		tank_d_array(3)=0.84e-6
+		tank_d_array(4)=0.84e-6
+		tank_d_array(5)=1.0e-6
+		tank_d_array(6)=1.0e-6
+			
+		/*需要输入：模拟舱室货物pressure的名字及其对应的货舱编号*/
+		tank_pre_name_array(1)="p_fueloil_p"
+		tp_id(1)=1
+		
+		tank_pre_name_array(2)="p_fueloil_s"
+		tp_id(2)=2		
+
+		tank_pre_name_array(3)="p_oil_p"
+		tp_id(3)=3
+
+		tank_pre_name_array(4)="p_oil_s"
+		tp_id(4)=4
+		
+		tank_pre_name_array(5)="p_water_p"
+		tp_id(5)=5
+		
+		tank_pre_name_array(6)="p_water_s"
+		tp_id(6)=6
+		
+		/*需要输入：全船所有质量点的重心[1.586934E+004 6.248383E+000 3.305094E+003]（使用mass property得到，先将所有质量点分到一个分组）*/
+		d.all_ship_barycentry(all_barycentre)
+		dump all_barycentre
+		/*需要输入：未调平时全船重心处的力与弯矩的负值（使用LBC resultant得到，select point填写全船所有质量点的重心）*/
+		d.lbc_resultants(all_barycentre , load_resultants)
+		dump load_resultants
+		
+		fx_cg= -load_resultants(1)
+		fy_cg= -load_resultants(2)
+		fz_cg= -load_resultants(3)
+		mx_cg= -load_resultants(4)
+		my_cg= -load_resultants(5)
+		mz_cg= -load_resultants(6)
+		
+		/*需要输入：粗略的全船加速度矩阵，由sesam得到*/
+		acc_aandr_temp(1)=0.0
+		acc_aandr_temp(2)=0.0
+		acc_aandr_temp(3)=0.0
+		acc_aandr_temp(4)=-1.2
+		acc_aandr_temp(5)=11.6
+		acc_aandr_temp(6)=-3.4
+				
+		/*计算空船重量重心惯性张量*/
+		empty_mass_point_group_name="0000_mass_point_Empty"						/*与step_one中生成的名字对应*/
+		d.barycentry_mass_inertia_tensor(empty_mass_point_group_name,empty_ship_barycentre,empty_ship_mass,empty_ship_inertia_tensor)
+		
+		/*计算空船响应关系*/
+		d.empty_ship_response_relation(all_barycentre,empty_ship_barycentre,empty_ship_mass,empty_ship_inertia_tensor,empty_ship_response_matrix)
+				
+		IF(tank_pre_num!=0)THEN
+			/*获得各液舱的参考点*/
+			FOR(i=1 TO tank_pre_num)
+				d.pre_get_re_point(gravity_a,tank_pre_name_array(i),tank_d_array(tp_id(i)),mass,barycentre,reference_point_possible,element_num_new)
+			
+				tank_b_array(tp_id(i),1) = (tank_m_array(tp_id(i)) * tank_b_array(tp_id(i),1) + mass * barycentre(1)) / (tank_m_array(tp_id(i)) + mass)
+				tank_b_array(tp_id(i),2) = (tank_m_array(tp_id(i)) * tank_b_array(tp_id(i),2) + mass * barycentre(2)) / (tank_m_array(tp_id(i)) + mass)
+				tank_b_array(tp_id(i),3) = (tank_m_array(tp_id(i)) * tank_b_array(tp_id(i),3) + mass * barycentre(3)) / (tank_m_array(tp_id(i)) + mass)
+				tank_m_array(tp_id(i)) += mass
+			END FOR
+			
+			FOR(i=1 TO tank_pre_num)
+				d.pre_get_re_point(gravity_a,tank_pre_name_array(i),tank_d_array(tp_id(i)),mass,barycentre,reference_point_possible,element_num_new)
+				
+				d.comp_axyz(all_barycentre,tank_b_array(tp_id(i),1:3),acc_aandr_temp,a_xyz_temp)
+				
+				FOR(j=1 TO element_num_new)
+					vj_temp = a_xyz_temp(1)*(reference_point_possible(j,1)-tank_b_array(tp_id(i),1)) + a_xyz_temp(2)*(reference_point_possible(j,2)-tank_b_array(tp_id(i),2)) + (a_xyz_temp(3) + gravity_a)*(reference_point_possible(j,3)-tank_b_array(tp_id(i),3))
+					IF(max_vj(tp_id(i)) < vj_temp)THEN
+						max_vj(tp_id(i)) = vj_temp
+						reference_point(tp_id(i),1)=reference_point_possible(j,1)
+						reference_point(tp_id(i),2)=reference_point_possible(j,2)
+						reference_point(tp_id(i),3)=reference_point_possible(j,3)
+					END IF
+				END FOR
+			END FOR
+			
+			/*计算液舱响应关系*/
+			FOR(i=1 TO tank_pre_num)
+				d.tank_response_relation(tank_pre_name_array(i),gravity_a,tank_d_array(tp_id(i)),all_barycentre,tank_b_array(tp_id(i),1:3),reference_point(tp_id(i),1:3),matrix_temp)
+				
+				FOR(j=1 TO 6)
+					FOR(k=1 TO 6)
+						tank_response_matrix(j,k) += matrix_temp(j,k)
+					END FOR
+				END FOR
+				d.free_array()
+			END FOR
+		END IF
+		
+		/*计算货舱响应关系*/
+		IF(cargo_pre_num!=0)THEN
+			FOR(i=1 TO cargo_pre_num)
+				d.pre_cargo(cargo_pre_name_array(i),gravity_a,cargo_d_array(cp_id(i)),all_barycentre,cargo_b_array(cp_id(i),1:3),cargo_repose_angle(cp_id(i)),matrix_temp)
+				
+				FOR(j=1 TO 6)
+					FOR(k=1 TO 6)
+						cargo_response_matrix(j,k) += matrix_temp(j,k)	
+					END FOR
+				END FOR
+				d.free_array()
+			END FOR
+		END IF
+
+		/*消元求解加速度*/
+		d.elimination_slove_acceleration(empty_ship_response_matrix,cargo_response_matrix,tank_response_matrix,fx_cg,fy_cg,fz_cg,mx_cg,my_cg,mz_cg,acceleration_matrix)
+
+		/*空船加载*/			
+		d.empty_ship_force(acceleration_matrix,all_barycentre,gravity_a,empty_ship_force_num,empty_force_name_array)
+		
+		/*货舱加载*/
+		IF(cargo_pre_num!=0)THEN
+			FOR(i=1 TO cargo_pre_num)
+				d.pre_cargo(cargo_pre_name_array(i),gravity_a,cargo_d_array(cp_id(i)),all_barycentre,cargo_b_array(cp_id(i),1:3),cargo_repose_angle(cp_id(i)),matrix_temp)
+				d.create_pressure(cargo_pre_name_array(i),acceleration_matrix,all_barycentre,cargo_b_array(cp_id(i),1:3))
+				d.free_array()
+			END FOR
+		END IF
+		
+		/*液舱加载*/
+		IF(tank_pre_num!=0)THEN
+			FOR(i=1 TO tank_pre_num)	
+				d.tank_response_relation(tank_pre_name_array(i),gravity_a,tank_d_array(tp_id(i)),all_barycentre,tank_b_array(tp_id(i),1:3),reference_point(tp_id(i),1:3),matrix_temp)	
+				d.create_pressure_pressonly(tank_pre_name_array(i),acceleration_matrix,all_barycentre,tank_b_array(tp_id(i),1:3))	
+				d.free_array()
+			END FOR
+		END IF
+		
+		dump acceleration_matrix
+		dump empty_ship_response_matrix
+		dump cargo_response_matrix
+		dump tank_response_matrix
+
+		dump fx_cg
+		dump fy_cg
+		dump fz_cg
+		dump mx_cg
+		dump my_cg
+		dump mz_cg
+		
+	END FUNCTION
+
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+
+	
+	/*函数pressure_mass_barycentre_tensor*/
+	/*输入项：压力的名字、重力加速度、货物的密度*/
+	/*输出项；压力对应的质量、重心、惯性张量*/
+	FUNCTION pressure_mass_barycentre_tensor(gravity_a,pressure_name,cargo_density,mass,barycentre,inertial_tensor)
+		
+		REAL gravity_a
+		STRING pressure_name[]
+		REAL cargo_density
+		
+		INTEGER pressure_id
+		INTEGER element_num
+		INTEGER n_load_var_id
+		INTEGER n_entity_type
+		INTEGER element_id
+		INTEGER n_sub_entity_id
+		REAL element_pressure
+		INTEGER n_node_position
+		INTEGER n_region_type
+		INTEGER entity_count
+		REAL element_area
+		REAL element_normal(3)
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		INTEGER pressure_factor
+		INTEGER ele_id_array(VIRTUAL)
+		REAL ele_pressure_array(VIRTUAL)
+		REAL ele_area_array(VIRTUAL)
+		REAL ele_normal_array(VIRTUAL)
+		STRING ele_id_array_str[VIRTUAL]
+		REAL ele_position_array(VIRTUAL)
+		REAL projected_area0
+		REAL h0
+		REAL mass0
+		REAL mass0x = 0.0
+		REAL mass0y = 0.0
+		REAL mass0z = 0.0
+		REAL delta_x
+		REAL delta_y
+		REAL delta_z
+		INTEGER i
+		INTEGER k = 1
+		
+		REAL mass
+		REAL barycentre()
+		REAL inertial_tensor()
+		
+		mass = 0.0
+		inertial_tensor(1,1) = 0.0
+		inertial_tensor(2,1) = 0.0
+		inertial_tensor(2,2) = 0.0
+		inertial_tensor(3,1) = 0.0
+		inertial_tensor(3,2) = 0.0
+		inertial_tensor(3,3) = 0.0
+		
+		loadsbcs_eval_all()
+		db_get_lbc_id(pressure_name,pressure_id)
+		db_get_lbc_fem_count(pressure_id,element_num)
+		
+		sys_allocate_array(ele_id_array,1,element_num)
+		sys_allocate_array(ele_pressure_array,1,element_num)
+		sys_allocate_array(ele_area_array,1,element_num)
+		sys_allocate_array(ele_normal_array,1,element_num,1,3)
+		
+		db_get_all_fem_ss_by_id(pressure_id)
+		FOR(i=1 TO element_num)
+			db_get_next_fem_ss_by_id(n_load_var_id,n_entity_type,element_id,n_sub_entity_id,element_pressure,scale_factor,n_node_position,n_region_type)
+			lbc_get_shell_area(element_id,element_area)
+			lbc_get_shell_normal(element_id,element_normal)
+			
+			IF(element_pressure!=0)THEN
+				ele_id_array(k)=element_id
+				ele_pressure_array(k)=element_pressure
+				ele_area_array(k)=element_area
+				ele_normal_array(k,1)=element_normal(1)
+				ele_normal_array(k,2)=element_normal(2)
+				ele_normal_array(k,3)=element_normal(3)
+				element_num_new=k
+				k=k+1
+			END IF
+		END FOR
+		
+		sys_reallocate_array(ele_id_array,1,element_num_new)
+		sys_reallocate_array(ele_pressure_array,1,element_num_new)
+		sys_reallocate_array(ele_area_array,1,element_num_new)
+		sys_reallocate_array(ele_normal_array,1,element_num_new,1,3)
+		
+		IF(n_load_var_id==1)THEN
+			normal_factor=-1
+		ELSE
+			normal_factor=1
+		END IF
+		
+		app_int_array_to_vstring("Elm",element_num_new,ele_id_array,ele_id_array_str)
+		fem_geom_elem_location(ele_id_array_str,ele_position_array,entity_count)
+
+		FOR(i=1 TO element_num_new)			
+			IF(ele_pressure_array(i)>=0)THEN
+				pressure_factor=1
+			ELSE
+				pressure_factor=-1
+			END IF
+			
+			IF(ele_normal_array(i,3)*normal_factor>=0)THEN
+				h0=mth_abs(ele_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+			ELSE
+				h0=-mth_abs(ele_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+			END IF
+			
+			projected_area0=ele_area_array(i)*normal_factor*pressure_factor*ele_normal_array(i,3)/sqrt(ele_normal_array(i,1)**2+ele_normal_array(i,2)**2+ele_normal_array(i,3)**2)
+			mass0=projected_area0*ele_pressure_array(i)*scale_factor/gravity_a
+			mass0x=mass0x+mass0*ele_position_array(i,1)
+			mass0y=mass0y+mass0*ele_position_array(i,2)
+			mass0z=mass0z+mass0*(ele_position_array(i,3)+h0/2)
+			mass=mass+mass0
+		END FOR
+		
+		IF(mass!=0)THEN
+		
+			barycentre(1)=mass0x/mass
+			barycentre(2)=mass0y/mass
+			barycentre(3)=mass0z/mass
+			
+			FOR(i=1 TO element_num_new)			
+				IF(ele_pressure_array(i)>=0)THEN
+					pressure_factor=1
+				ELSE
+					pressure_factor=-1
+				END IF
+				
+				IF(ele_normal_array(i,3)*normal_factor>=0)THEN
+					h0=mth_abs(ele_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+				ELSE
+					h0=-mth_abs(ele_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+				END IF				
+				
+				projected_area0=ele_area_array(i)*normal_factor*pressure_factor*ele_normal_array(i,3)/sqrt(ele_normal_array(i,1)**2+ele_normal_array(i,2)**2+ele_normal_array(i,3)**2)
+				mass0=projected_area0*ele_pressure_array(i)*scale_factor/gravity_a
+				delta_x=barycentre(1)-ele_position_array(i,1)
+				delta_y=barycentre(2)-ele_position_array(i,2)
+				delta_z=barycentre(3)-ele_position_array(i,3)-h0/2
+								
+				inertial_tensor(1,1)=inertial_tensor(1,1)+mass0*(delta_y**2+delta_z**2)+mass0*(projected_area0+h0**2)/12
+				inertial_tensor(2,2)=inertial_tensor(2,2)+mass0*(delta_x**2+delta_z**2)+mass0*(projected_area0+h0**2)/12
+				inertial_tensor(3,3)=inertial_tensor(3,3)+mass0*(delta_x**2+delta_y**2)+mass0*projected_area0/6
+				inertial_tensor(2,1)=inertial_tensor(2,1)-mass0*delta_x*delta_y
+				inertial_tensor(3,1)=inertial_tensor(3,1)-mass0*delta_x*delta_z
+				inertial_tensor(3,2)=inertial_tensor(3,2)-mass0*delta_y*delta_z
+			END FOR
+		
+		END IF
+	
+	END FUNCTION
+	
+	/*函数creat_load_mass_point*/
+	/*输入项；舱的质量数组、重心数组、惯性张量数组*/
+	/*输出项：无*/
+	FUNCTION creat_load_mass_point(cargo_num,mass_array,barycentre_array,inertial_tensor_array)
+		
+		INTEGER cargo_num
+		REAL mass_array()
+		REAL barycentre_array()
+		REAL inertial_tensor_array()
+		
+		INTEGER max_element_id
+		STRING fem_create_element[VIRTUAL]
+		STRING property_data_str[256](9)
+		STRING barycentre_str[256]
+		INTEGER i		
+		
+		ga_group_current_set("0000_mass_point_Loads")
+		db_get_max_elem_id(max_element_id)
+		
+		FOR(i=1 TO cargo_num)
+			max_element_id=max_element_id+1
+			barycentre_str="["//str_from_real(barycentre_array(i,1))//","//str_from_real(barycentre_array(i,2))//","//str_from_real(barycentre_array(i,3))//"]"
+			property_data_str(1)=str_from_real(mass_array(i))
+			property_data_str(4)=str_from_real(inertial_tensor_array(i,1,1))
+			property_data_str(5)=str_from_real(inertial_tensor_array(i,2,1))
+			property_data_str(6)=str_from_real(inertial_tensor_array(i,2,2))
+			property_data_str(7)=str_from_real(inertial_tensor_array(i,3,1))
+			property_data_str(8)=str_from_real(inertial_tensor_array(i,3,2))
+			property_data_str(9)=str_from_real(inertial_tensor_array(i,3,3))
+			
+			fem_create_elems_1("Point","Point",str_from_integer(max_element_id),"Standard",3,barycentre_str,"","","","","","","",fem_create_element)
+			elementprops_create("0d_m_prop_load_"//str_from_integer(mass_point_prop_id),1,25,18,27,2,20,[2069,4001,4024,10,4026,11,4028,4029,12],[1,9,2,1,1,1,1,1,1],property_data_str,"Element "//str_from_integer(max_element_id))
+			mass_point_prop_id += 1
+		END FOR
+		
+	END FUNCTION 
+	
+	/*函数creat_empty_ship_mass_point*/
+	/*输入项；重力加速度*/
+	/*输出项：无*/
+	FUNCTION creat_empty_ship_mass_point(gravity_a,lbc_force_count,lbc_force_name_array)
+		
+		REAL gravity_a
+		INTEGER lbc_force_count
+		STRING lbc_force_name_array[]()
+		
+		INTEGER lbc_force_id
+		INTEGER lbc_force_node_num
+		INTEGER max_element_id
+		INTEGER i
+		INTEGER j
+		INTEGER n_load_var_id
+		INTEGER n_entity_type
+		INTEGER node_id_array(VIRTUAL)
+		INTEGER n_sub_entity_id
+		REAL node_force(3)
+		INTEGER n_null_vector(3)
+		REAL scale_factor
+		INTEGER n_node_position
+		INTEGER n_region_type
+		STRING fem_create_element[VIRTUAL]
+		STRING node_id_array_str[VIRTUAL]
+		STRING property_data_str[256](9)
+		REAL mass0
+		INTEGER empty_mass_point_start
+		INTEGER empty_mass_point_end
+		
+		sys_allocate_array(node_id_array,1,3)
+				
+		FOR(i=1 TO lbc_force_count)
+			db_get_lbc_id(lbc_force_name_array(i),lbc_force_id)
+			db_get_lbc_fem_count(lbc_force_id,lbc_force_node_num)
+			sys_reallocate_array(node_id_array,1,lbc_force_node_num)
+					
+			ga_group_create("000_mass_point_"//lbc_force_name_array(i))
+			ga_group_current_set("000_mass_point_"//lbc_force_name_array(i))
+			
+			db_get_all_fem_sv_by_id(lbc_force_id)
+				FOR(j=1 TO lbc_force_node_num)
+					db_get_next_fem_sv_by_id(n_load_var_id,n_entity_type,node_id_array(j),n_sub_entity_id,node_force,n_null_vector,scale_factor,n_node_position,n_region_type)					
+				END FOR
+			
+			db_get_max_elem_id(max_element_id)
+			max_element_id=max_element_id+1
+			
+			IF(i==1)THEN
+				empty_mass_point_start=max_element_id
+			END IF
+			
+			app_int_array_to_vstring("Node",lbc_force_node_num,node_id_array,node_id_array_str)
+			fem_create_elems_1("Point","Point",str_from_integer(max_element_id),"Standard",3,node_id_array_str,"","","","","","","",fem_create_element)
+			
+			mass0=-node_force(3)*scale_factor/gravity_a
+			property_data_str(1)=str_from_real(mass0)
+			elementprops_create("0d_m_prop_"//lbc_force_name_array(i),1,25,18,27,2,20,[2069,4001,4024,10,4026,11,4028,4029,12],[1,9,2,1,1,1,1,1,1],property_data_str,"Element "//fem_create_element)
+		END FOR
+		
+		db_get_max_elem_id(empty_mass_point_end)	
+		ga_group_create("0000_mass_point_Empty")
+		ga_group_entity_add("0000_mass_point_Empty", "Elm "//str_from_integer(empty_mass_point_start)//":"//str_from_integer(empty_mass_point_end))
+		
+		
+	END FUNCTION 
+
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
+	
+	/*函数：计算空船的质量，重心，惯性张量*/
+	FUNCTION barycentry_mass_inertia_tensor(empty_mass_point_group_name,empty_ship_barycentre,empty_ship_mass,empty_ship_inertia_tensor)
+		
+		STRING empty_mass_point_group_name[]
+		REAL empty_ship_barycentre()
+		REAL empty_ship_inertia_tensor()
+		REAL empty_ship_mass
+		
+		STRING temp_group_array[32](1)
+		REAL mass_prop_mass_props_array(VIRTUAL)
+		STRING mass_prop_entity_list[VIRTUAL]
+		STRING mass_prop_reject_list[VIRTUAL]
+		INTEGER mass_prop_noutputs
+		STRING mass_prop_gnames_out[32](VIRTUAL)
+		INTEGER mass_prop_entities(VIRTUAL)
+		INTEGER mass_prop_entity_types(VIRTUAL)
+		INTEGER mass_prop_len_elist
+		INTEGER mass_prop_num_ents
+		INTEGER mass_prop_len_rlist
+		INTEGER mass_prop_num_rejects
+		INTEGER mass_prop_segment_id
+		INTEGER mass_prop_cord_label
+		INTEGER mass_prop_user_cord_label
+				
+		temp_group_array(1)=empty_mass_point_group_name
+		mass_prop.cleanup_detailed(mass_prop_mass_props_array,mass_prop_entity_list,mass_prop_reject_list)
+		mass_prop_create_detailed("3D","Group","FEM","Summary",1,temp_group_array,"","Coord 0","Use Element Properties",@
+									"Use Element Properties","Coord 0",3,1,FALSE,FALSE,@
+									mass_prop_noutputs,mass_prop_gnames_out,mass_prop_entities,@
+									mass_prop_entity_types,mass_prop_mass_props_array,mass_prop_entity_list,@
+									mass_prop_len_elist,mass_prop_num_ents,mass_prop_reject_list,mass_prop_len_rlist,@
+									mass_prop_num_rejects,mass_prop_segment_id,mass_prop_cord_label,mass_prop_user_cord_label)
+		
+		empty_ship_barycentre(1)=mass_prop_mass_props_array(1,3)
+		empty_ship_barycentre(2)=mass_prop_mass_props_array(1,4)
+		empty_ship_barycentre(3)=mass_prop_mass_props_array(1,5)
+		empty_ship_mass=mass_prop_mass_props_array(1,2)
+		empty_ship_inertia_tensor(1,1)=mass_prop_mass_props_array(1,12)
+		empty_ship_inertia_tensor(2,1)=mass_prop_mass_props_array(1,13)
+		empty_ship_inertia_tensor(3,1)=mass_prop_mass_props_array(1,14)
+		empty_ship_inertia_tensor(2,2)=mass_prop_mass_props_array(1,15)
+		empty_ship_inertia_tensor(3,2)=mass_prop_mass_props_array(1,16)
+		empty_ship_inertia_tensor(3,3)=mass_prop_mass_props_array(1,17)
+			
+	END FUNCTION
+	
+	/*函数：计算空船响应关系*/
+	FUNCTION empty_ship_response_relation(all_barycentre,empty_ship_barycentre,empty_ship_mass,empty_ship_inertia_tensor,empty_ship_response_matrix)
+		
+		REAL all_barycentre()
+		REAL empty_ship_barycentre()
+		REAL empty_ship_inertia_tensor()
+		REAL empty_ship_mass
+		
+		REAL delta_x
+		REAL delta_y
+		REAL delta_z
+		
+		REAL empty_ship_response_matrix()
+		
+		delta_x=empty_ship_barycentre(1)-all_barycentre(1)
+		delta_y=empty_ship_barycentre(2)-all_barycentre(2)
+		delta_z=empty_ship_barycentre(3)-all_barycentre(3)
+		
+		empty_ship_response_matrix(1,1)=-empty_ship_mass
+		empty_ship_response_matrix(2,2)=-empty_ship_mass
+		empty_ship_response_matrix(3,3)=-empty_ship_mass
+		
+		empty_ship_response_matrix(1,5)=-delta_z*empty_ship_mass
+		empty_ship_response_matrix(3,4)=-delta_y*empty_ship_mass
+		empty_ship_response_matrix(2,6)=-delta_x*empty_ship_mass
+		empty_ship_response_matrix(2,4)=-empty_ship_response_matrix(1,5)
+		empty_ship_response_matrix(1,6)=-empty_ship_response_matrix(3,4)
+		empty_ship_response_matrix(3,5)=-empty_ship_response_matrix(2,6)
+		
+		empty_ship_response_matrix(5,1)=empty_ship_response_matrix(1,5)
+		empty_ship_response_matrix(4,3)=empty_ship_response_matrix(3,4)
+		empty_ship_response_matrix(6,2)=empty_ship_response_matrix(2,6)
+		empty_ship_response_matrix(4,2)=-empty_ship_response_matrix(1,5)
+		empty_ship_response_matrix(6,1)=-empty_ship_response_matrix(3,4)
+		empty_ship_response_matrix(5,3)=-empty_ship_response_matrix(2,6)
+		
+		empty_ship_response_matrix(4,4)=-empty_ship_inertia_tensor(1,1)-empty_ship_mass*(delta_y**2+delta_z**2)
+		empty_ship_response_matrix(5,4)=-empty_ship_inertia_tensor(2,1)+empty_ship_mass*delta_x*delta_y
+		empty_ship_response_matrix(5,5)=-empty_ship_inertia_tensor(2,2)-empty_ship_mass*(delta_x**2+delta_z**2)
+		empty_ship_response_matrix(6,4)=-empty_ship_inertia_tensor(3,1)+empty_ship_mass*delta_x*delta_z
+		empty_ship_response_matrix(6,5)=-empty_ship_inertia_tensor(3,2)+empty_ship_mass*delta_y*delta_z
+		empty_ship_response_matrix(6,6)=-empty_ship_inertia_tensor(3,3)-empty_ship_mass*(delta_x**2+delta_y**2)
+		
+		empty_ship_response_matrix(4,5)=empty_ship_response_matrix(5,4)
+		empty_ship_response_matrix(4,6)=empty_ship_response_matrix(6,4)
+		
+	END FUNCTION
+	
+	/*函数：计算液舱参考点坐标预计算*/
+	FUNCTION pre_get_re_point(gravity_a,pressure_name,cargo_density,mass,barycentre,reference_point_possible,element_num_new)
+		
+		REAL gravity_a
+		STRING pressure_name[]
+		REAL cargo_density
+		
+		INTEGER pressure_id
+		INTEGER element_num
+		INTEGER n_load_var_id
+		INTEGER n_entity_type
+		INTEGER element_id
+		INTEGER n_sub_entity_id
+		REAL element_pressure
+		INTEGER n_node_position
+		INTEGER n_region_type
+		INTEGER entity_count
+		REAL element_area
+		REAL element_normal(3)
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		INTEGER pressure_factor
+		INTEGER ele_id_array(VIRTUAL)
+		REAL ele_pressure_array(VIRTUAL)
+		REAL ele_area_array(VIRTUAL)
+		REAL ele_normal_array(VIRTUAL)
+		STRING ele_id_array_str[VIRTUAL]
+		REAL ele_position_array(VIRTUAL)
+		REAL projected_area0
+		REAL h0
+		REAL mass0
+		REAL mass0x = 0.0
+		REAL mass0y = 0.0
+		REAL mass0z = 0.0
+		INTEGER i
+		INTEGER k = 1		
+		
+		REAL mass		
+		REAL barycentre()
+		REAL reference_point_possible()
+		
+		mass=0.0
+				
+		loadsbcs_eval_all()
+		db_get_lbc_id(pressure_name,pressure_id)
+		db_get_lbc_fem_count(pressure_id,element_num)
+		
+		sys_allocate_array(ele_id_array,1,element_num)
+		sys_allocate_array(ele_pressure_array,1,element_num)
+		sys_allocate_array(ele_area_array,1,element_num)
+		sys_allocate_array(ele_normal_array,1,element_num,1,3)
+		
+		db_get_all_fem_ss_by_id(pressure_id)
+		FOR(i=1 TO element_num)
+			db_get_next_fem_ss_by_id(n_load_var_id,n_entity_type,element_id,n_sub_entity_id,element_pressure,scale_factor,n_node_position,n_region_type)
+			lbc_get_shell_area(element_id,element_area)
+			lbc_get_shell_normal(element_id,element_normal)
+			
+			IF(element_pressure!=0)THEN
+				ele_id_array(k)=element_id
+				ele_pressure_array(k)=element_pressure
+				ele_area_array(k)=element_area
+				ele_normal_array(k,1)=element_normal(1)
+				ele_normal_array(k,2)=element_normal(2)
+				ele_normal_array(k,3)=element_normal(3)
+				element_num_new=k
+				k=k+1
+			END IF
+		END FOR
+		
+		sys_reallocate_array(ele_id_array,1,element_num_new)
+		sys_reallocate_array(ele_pressure_array,1,element_num_new)
+		sys_reallocate_array(ele_area_array,1,element_num_new)
+		sys_reallocate_array(ele_normal_array,1,element_num_new,1,3)
+		
+		sys_allocate_array(reference_point_possible,1,element_num_new,1,3)
+		
+		IF(n_load_var_id==1)THEN
+			normal_factor=-1
+		ELSE
+			normal_factor=1
+		END IF
+		
+		app_int_array_to_vstring("Elm",element_num_new,ele_id_array,ele_id_array_str)
+		fem_geom_elem_location(ele_id_array_str,ele_position_array,entity_count)
+		
+		FOR(i=1 TO element_num_new)
+			IF(ele_pressure_array(i)>=0)THEN
+				pressure_factor=1
+			ELSE
+				pressure_factor=-1
+			END IF
+			
+			IF(ele_normal_array(i,3)*normal_factor>=0)THEN
+				h0=mth_abs(ele_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+			ELSE
+				h0=-mth_abs(ele_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+			END IF
+			
+			projected_area0=ele_area_array(i)*normal_factor*pressure_factor*ele_normal_array(i,3)/sqrt(ele_normal_array(i,1)**2+ele_normal_array(i,2)**2+ele_normal_array(i,3)**2)
+			mass0=projected_area0*ele_pressure_array(i)*scale_factor/gravity_a
+			mass0x=mass0x+mass0*ele_position_array(i,1)
+			mass0y=mass0y+mass0*ele_position_array(i,2)
+			mass0z=mass0z+mass0*(ele_position_array(i,3)+h0/2)
+			mass=mass+mass0
+			
+			reference_point_possible(i,1)=ele_position_array(i,1)
+			reference_point_possible(i,2)=ele_position_array(i,2)
+			reference_point_possible(i,3)=ele_position_array(i,3)+h0
+		END FOR
+		
+		IF(mass!=0)THEN
+			barycentre(1)=mass0x/mass
+			barycentre(2)=mass0y/mass
+			barycentre(3)=mass0z/mass
+		END IF
+
+	END FUNCTION
+	
+	/*函数：货舱响应计算*/
+	FUNCTION pre_cargo(pressure_name,gravity_a,cargo_density,barycentre,cargo_bary,repose_angle,matrix)
+		
+		/*input*/
+		STRING pressure_name[]
+		REAL gravity_a
+		REAL cargo_density
+		REAL repose_angle
+		REAL barycentre()
+		REAL cargo_bary()
+		/*output*/
+		REAL matrix()
+		
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		INTEGER pressure_factor
+		REAL h0
+		INTEGER i
+		INTEGER k=1
+		
+		INTEGER pressure_id
+		
+		REAL matrix_a(6,3)
+		REAL matrix_tem(3,3)			/*记录当前单元力与线加速度关系*/
+		REAL cos_alpha	
+		REAL tan_alpha
+		REAL kc
+		REAL projected_area_x
+		REAL projected_area_y
+		REAL projected_area_z
+		
+		REAL Pbs_d_tem
+		REAL vec_godown(3)				/*沿板向下向量*/
+		REAL shear_area_x				/*单元面积与剪切方向*/
+		REAL shear_area_y
+		REAL shear_area_z
+		
+		INTEGER num_nodes_element
+		INTEGER id_nodes_element(4)
+		REAL node_position(4,3)
+		REAL node_position_sum(3)
+		
+		d.get_pressure_data(pressure_name,pressure_id,element_num_new,scale_factor,normal_factor)
+		
+		sys_allocate_array(pre_p_bd,1,element_num_new,1,3)
+		sys_allocate_array(Pbs_dx,1,element_num_new)
+		sys_allocate_array(Pbs_dy,1,element_num_new)
+		sys_allocate_array(Pbs_d,1,element_num_new,1,3)
+
+		FOR(i=1 TO element_num_new)
+			/*正压力*/
+			IF(element_pressure_array(i)!=0)THEN
+				pre_p_bd(i,1)=cargo_density*0.25*(cargo_bary(1)-element_position_array(i,1))
+				pre_p_bd(i,2)=cargo_density*0.25*(cargo_bary(2)-element_position_array(i,2))
+			END IF
+			
+			IF(element_pressure_array(i)>=0)THEN
+				pressure_factor=1
+			ELSE
+				pressure_factor=-1
+			END IF
+			
+			IF(normal_factor*element_normal_array(i,3)*pressure_factor>=0)THEN
+				cos_alpha=normal_factor*element_normal_array(i,3)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+				kc=1-mth_sind(repose_angle)*(1-cos_alpha**2)
+			ELSE
+				kc=0
+			END IF
+
+			IF(normal_factor*element_normal_array(i,3)*pressure_factor>=0)THEN
+				h0=mth_abs(element_pressure_array(i)*scale_factor/(gravity_a*cargo_density))
+			ELSE
+				h0=0
+			END IF
+			
+			pre_p_bd(i,3)=cargo_density*kc*h0
+
+			projected_area_x=-element_area_array(i)*pressure_factor*normal_factor*element_normal_array(i,1)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+			projected_area_y=-element_area_array(i)*pressure_factor*normal_factor*element_normal_array(i,2)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+			projected_area_z=-element_area_array(i)*pressure_factor*normal_factor*element_normal_array(i,3)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+
+			/*切向力*/
+			/*剪切力平均到单元节点上*/
+			/*力矩为力乘四（或三）节点平均坐标*/
+			db_get_elem_nodes(element_id_array(i),num_nodes_element,id_nodes_element)
+			FOR(k=1 TO num_nodes_element)
+				db_get_node(id_nodes_element(k),node_position(k,1:3))
+				node_position_sum(1) += node_position(k,1)
+				node_position_sum(2) += node_position(k,2)
+				node_position_sum(3) += node_position(k,3)
+			END FOR
+
+			IF (mth_abs(cos_alpha)>0.99)THEN
+				/*内底板*/
+				Pbs_dx(i) = -0.75*cargo_density*h0*element_area_array(i)
+				Pbs_dy(i) = -0.75*cargo_density*h0*element_area_array(i)
+			ELSE 
+				/*其他斜板*/
+				IF(cos_alpha!=0)THEN			/*排除竖直舱壁*/
+					tan_alpha = mth_sqrt(1/cos_alpha**2-1)
+					Pbs_d_tem  = cargo_density*(1-kc)*h0/tan_alpha
+					
+					d.vector(element_normal_array(i,1:3),vec_godown)
+					
+					shear_area_x = pressure_factor*normal_factor*element_area_array(i)*vec_godown(1)/mth_sqrt(vec_godown(1)**2+vec_godown(2)**2+vec_godown(3)**2)
+					shear_area_y = pressure_factor*normal_factor*element_area_array(i)*vec_godown(2)/mth_sqrt(vec_godown(1)**2+vec_godown(2)**2+vec_godown(3)**2)
+					shear_area_z = pressure_factor*normal_factor*element_area_array(i)*vec_godown(3)/mth_sqrt(vec_godown(1)**2+vec_godown(2)**2+vec_godown(3)**2)
+					
+					Pbs_d(i,1)=shear_area_x*Pbs_d_tem
+					Pbs_d(i,2)=shear_area_y*Pbs_d_tem
+					Pbs_d(i,3)=shear_area_z*Pbs_d_tem
+				END IF
+			END IF
+			
+			/*正压力与切向力*/
+			/*Fx*/
+			matrix_tem(1,1)=projected_area_x*pre_p_bd(i,1)
+			matrix_tem(1,2)=projected_area_x*pre_p_bd(i,2)
+			matrix_tem(1,3)=projected_area_x*pre_p_bd(i,3)
+			
+			matrix_a(1,1)=matrix_a(1,1)+matrix_tem(1,1)+Pbs_dx(i)
+			matrix_a(1,2)=matrix_a(1,2)+matrix_tem(1,2)
+			matrix_a(1,3)=matrix_a(1,3)+matrix_tem(1,3)+Pbs_d(i,1)
+			/*Fy*/
+			matrix_tem(2,1)=projected_area_y*pre_p_bd(i,1)
+			matrix_tem(2,2)=projected_area_y*pre_p_bd(i,2)
+			matrix_tem(2,3)=projected_area_y*pre_p_bd(i,3)
+			
+			matrix_a(2,1)=matrix_a(2,1)+matrix_tem(2,1)
+			matrix_a(2,2)=matrix_a(2,2)+matrix_tem(2,2)+Pbs_dy(i)
+			matrix_a(2,3)=matrix_a(2,3)+matrix_tem(2,3)+Pbs_d(i,2)
+			/*Fz*/
+			matrix_tem(3,1)=projected_area_z*pre_p_bd(i,1)
+			matrix_tem(3,2)=projected_area_z*pre_p_bd(i,2)
+			matrix_tem(3,3)=projected_area_z*pre_p_bd(i,3)
+			
+			matrix_a(3,1)=matrix_a(3,1)+matrix_tem(3,1)
+			matrix_a(3,2)=matrix_a(3,2)+matrix_tem(3,2)
+			matrix_a(3,3)=matrix_a(3,3)+matrix_tem(3,3)+Pbs_d(i,3)
+
+			/*Mx*/
+			matrix_a(4,1)=matrix_a(4,1)-matrix_tem(2,1)*(element_position_array(i,3)-barycentre(3)) + matrix_tem(3,1)*(element_position_array(i,2)-barycentre(2))
+			matrix_a(4,2)=matrix_a(4,2)-matrix_tem(2,2)*(element_position_array(i,3)-barycentre(3)) + matrix_tem(3,2)*(element_position_array(i,2)-barycentre(2)) - Pbs_dy(i)*(node_position_sum(3)/num_nodes_element-barycentre(3))
+
+			matrix_a(4,3)=matrix_a(4,3)-matrix_tem(2,3)*(element_position_array(i,3)-barycentre(3)) + matrix_tem(3,3)*(element_position_array(i,2)-barycentre(2)) - Pbs_d(i,2)*(node_position_sum(3)/num_nodes_element-barycentre(3)) + Pbs_d(i,3)*(node_position_sum(2)/num_nodes_element-barycentre(2))
+			/*My*/
+			matrix_a(5,1)=matrix_a(5,1)+matrix_tem(1,1)*(element_position_array(i,3)-barycentre(3)) - matrix_tem(3,1)*(element_position_array(i,1)-barycentre(1)) + Pbs_dx(i)*(node_position_sum(3)/num_nodes_element-barycentre(3))
+			matrix_a(5,2)=matrix_a(5,2)+matrix_tem(1,2)*(element_position_array(i,3)-barycentre(3)) - matrix_tem(3,2)*(element_position_array(i,1)-barycentre(1))
+			matrix_a(5,3)=matrix_a(5,3)+matrix_tem(1,3)*(element_position_array(i,3)-barycentre(3)) - matrix_tem(3,3)*(element_position_array(i,1)-barycentre(1)) + Pbs_d(i,1)*(node_position_sum(3)/num_nodes_element-barycentre(3)) - Pbs_d(i,3)*(node_position_sum(1)/num_nodes_element-barycentre(1))
+			/*Mz*/
+			matrix_a(6,1)=matrix_a(6,1)-matrix_tem(1,1)*(element_position_array(i,2)-barycentre(2)) + matrix_tem(2,1)*(element_position_array(i,1)-barycentre(1)) - Pbs_dx(i)*(node_position_sum(2)/num_nodes_element-barycentre(2))
+			matrix_a(6,2)=matrix_a(6,2)-matrix_tem(1,2)*(element_position_array(i,2)-barycentre(2)) + matrix_tem(2,2)*(element_position_array(i,1)-barycentre(1)) + Pbs_dy(i)*(node_position_sum(1)/num_nodes_element-barycentre(1))
+			matrix_a(6,3)=matrix_a(6,3)-matrix_tem(1,3)*(element_position_array(i,2)-barycentre(2)) + matrix_tem(2,3)*(element_position_array(i,1)-barycentre(1)) - Pbs_d(i,1)*(node_position_sum(2)/num_nodes_element-barycentre(2)) + Pbs_d(i,2)*(node_position_sum(1)/num_nodes_element-barycentre(1))
+			
+			/*对切向力临时变量归零*/		
+			node_position_sum(1)=0
+			node_position_sum(2)=0
+			node_position_sum(3)=0
+		END FOR
+
+		d.matrix_6x3_to_6x6(matrix_a,cargo_bary,barycentre,matrix)
+		
+	END FUNCTION
+
+	/*函数：液舱响应计算*/
+	FUNCTION tank_response_relation(pressure_name,gravity_a,cargo_density,barycentre,cargo_bary,reference_point,matrix)
+		/*input*/
+		STRING pressure_name[]
+		REAL gravity_a
+		REAL cargo_density
+		REAL barycentre()
+		REAL cargo_bary()
+		REAL reference_point()
+
+		/*output*/
+		REAL matrix()
+		
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		INTEGER pressure_factor
+		INTEGER i
+		
+		INTEGER pressure_id
+		
+		REAL matrix_a(6,3)
+		REAL matrix_tem(3,3)			/*记录当前单元力与线加速度关系*/
+		REAL projected_area_x
+		REAL projected_area_y
+		REAL projected_area_z
+				
+		d.get_pressure_data(pressure_name,pressure_id,element_num_new,scale_factor,normal_factor)
+		
+		sys_allocate_array(pre_p_bd,1,element_num_new,1,3)
+
+		FOR(i=1 TO element_num_new)
+			/*正压力*/
+			pre_p_bd(i,1)=mth_max(1.025,cargo_density*1000000)*0.62*(reference_point(1)-element_position_array(i,1))/1000000
+			pre_p_bd(i,2)=mth_max(1.025,cargo_density*1000000)*0.67*(reference_point(2)-element_position_array(i,2))/1000000
+			pre_p_bd(i,3)=mth_max(1.025,cargo_density*1000000)*(reference_point(3)-element_position_array(i,3))/1000000		
+			
+			IF(element_pressure_array(i)>=0)THEN
+				pressure_factor=1
+			ELSE
+				pressure_factor=-1
+			END IF
+						
+			projected_area_x=-element_area_array(i)*normal_factor*pressure_factor*element_normal_array(i,1)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+			projected_area_y=-element_area_array(i)*normal_factor*pressure_factor*element_normal_array(i,2)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+			projected_area_z=-element_area_array(i)*normal_factor*pressure_factor*element_normal_array(i,3)/mth_sqrt(element_normal_array(i,1)**2+element_normal_array(i,2)**2+element_normal_array(i,3)**2)
+			/*Fx*/
+			matrix_tem(1,1)=projected_area_x*pre_p_bd(i,1)
+			matrix_tem(1,2)=projected_area_x*pre_p_bd(i,2)
+			matrix_tem(1,3)=projected_area_x*pre_p_bd(i,3)
+			
+			matrix_a(1,1)=matrix_a(1,1)+matrix_tem(1,1)
+			matrix_a(1,2)=matrix_a(1,2)+matrix_tem(1,2)
+			matrix_a(1,3)=matrix_a(1,3)+matrix_tem(1,3)
+			/*Fy*/
+			matrix_tem(2,1)=projected_area_y*pre_p_bd(i,1)
+			matrix_tem(2,2)=projected_area_y*pre_p_bd(i,2)
+			matrix_tem(2,3)=projected_area_y*pre_p_bd(i,3)
+			
+			matrix_a(2,1)=matrix_a(2,1)+matrix_tem(2,1)
+			matrix_a(2,2)=matrix_a(2,2)+matrix_tem(2,2)
+			matrix_a(2,3)=matrix_a(2,3)+matrix_tem(2,3)
+			/*Fz*/
+			matrix_tem(3,1)=projected_area_z*pre_p_bd(i,1)
+			matrix_tem(3,2)=projected_area_z*pre_p_bd(i,2)
+			matrix_tem(3,3)=projected_area_z*pre_p_bd(i,3)
+			
+			matrix_a(3,1)=matrix_a(3,1)+matrix_tem(3,1)
+			matrix_a(3,2)=matrix_a(3,2)+matrix_tem(3,2)
+			matrix_a(3,3)=matrix_a(3,3)+matrix_tem(3,3)
+			
+			/*Mx*/
+			matrix_a(4,1)=matrix_a(4,1)-matrix_tem(2,1)*(element_position_array(i,3)-barycentre(3)) + matrix_tem(3,1)*(element_position_array(i,2)-barycentre(2))
+			matrix_a(4,2)=matrix_a(4,2)-matrix_tem(2,2)*(element_position_array(i,3)-barycentre(3)) + matrix_tem(3,2)*(element_position_array(i,2)-barycentre(2))
+			matrix_a(4,3)=matrix_a(4,3)-matrix_tem(2,3)*(element_position_array(i,3)-barycentre(3)) + matrix_tem(3,3)*(element_position_array(i,2)-barycentre(2))
+			
+			/*My*/
+			matrix_a(5,1)=matrix_a(5,1)+matrix_tem(1,1)*(element_position_array(i,3)-barycentre(3)) - matrix_tem(3,1)*(element_position_array(i,1)-barycentre(1))
+			matrix_a(5,2)=matrix_a(5,2)+matrix_tem(1,2)*(element_position_array(i,3)-barycentre(3)) - matrix_tem(3,2)*(element_position_array(i,1)-barycentre(1))
+			matrix_a(5,3)=matrix_a(5,3)+matrix_tem(1,3)*(element_position_array(i,3)-barycentre(3)) - matrix_tem(3,3)*(element_position_array(i,1)-barycentre(1))
+			
+			/*Mz*/
+			matrix_a(6,1)=matrix_a(6,1)-matrix_tem(1,1)*(element_position_array(i,2)-barycentre(2)) + matrix_tem(2,1)*(element_position_array(i,1)-barycentre(1))
+			matrix_a(6,2)=matrix_a(6,2)-matrix_tem(1,2)*(element_position_array(i,2)-barycentre(2)) + matrix_tem(2,2)*(element_position_array(i,1)-barycentre(1))
+			matrix_a(6,3)=matrix_a(6,3)-matrix_tem(1,3)*(element_position_array(i,2)-barycentre(2)) + matrix_tem(2,3)*(element_position_array(i,1)-barycentre(1))
+		END FOR
+		
+		d.matrix_6x3_to_6x6(matrix_a,cargo_bary,barycentre,matrix)
+		
+	END FUNCTION
+	
+	/*获得某一pressure的计算数据*/
+	FUNCTION get_pressure_data(pressure_name,pressure_id,element_num_new,scale_factor,normal_factor)
+		/*input*/
+		STRING pressure_name[]
+		
+		/*output*/
+		INTEGER pressure_id
+		INTEGER element_num
+		INTEGER n_load_var_id
+		INTEGER n_entity_type
+		INTEGER element_id
+		INTEGER n_sub_entity_id
+		REAL element_pressure
+		INTEGER n_node_position
+		INTEGER n_region_type
+		INTEGER entity_count
+		REAL element_area
+		REAL element_normal(3)
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		
+		STRING element_id_array_str[VIRTUAL]
+		REAL element_position_array_tem(VIRTUAL)
+		INTEGER i
+		INTEGER k=1
+		
+		loadsbcs_eval_all()
+		db_get_lbc_id(pressure_name,pressure_id)
+		db_get_lbc_fem_count(pressure_id,element_num)
+		
+		sys_allocate_array(element_id_array,1,element_num)
+		sys_allocate_array(element_pressure_array,1,element_num)
+		sys_allocate_array(element_area_array,1,element_num)
+		sys_allocate_array(element_normal_array,1,element_num,1,3)
+	
+		db_get_all_fem_ss_by_id(pressure_id)
+		FOR(i=1 TO element_num)
+			db_get_next_fem_ss_by_id(n_load_var_id,n_entity_type,element_id,n_sub_entity_id,element_pressure,scale_factor,n_node_position,n_region_type)
+			lbc_get_shell_area(element_id,element_area)
+			lbc_get_shell_normal(element_id,element_normal)
+			
+			IF(element_pressure!=0)THEN
+				element_id_array(k)=element_id
+				element_pressure_array(k)=element_pressure
+				element_area_array(k)=element_area
+				element_normal_array(k,1)=element_normal(1)
+				element_normal_array(k,2)=element_normal(2)
+				element_normal_array(k,3)=element_normal(3)
+				element_num_new=k
+				k=k+1
+			END IF			
+		END FOR
+		
+		sys_reallocate_array(element_id_array,1,element_num_new)
+		sys_reallocate_array(element_pressure_array,1,element_num_new)
+		sys_reallocate_array(element_area_array,1,element_num_new)
+		sys_reallocate_array(element_normal_array,1,element_num_new,1,3)
+		sys_allocate_array(element_position_array,1,element_num_new,1,3)
+		
+		IF(n_load_var_id==1)THEN
+			normal_factor=-1
+		ELSE
+			normal_factor=1
+		END IF
+		
+		app_int_array_to_vstring("Elm",element_num_new,element_id_array,element_id_array_str)
+
+		fem_geom_elem_location(element_id_array_str,element_position_array_tem,entity_count)
+		
+		FOR(i= 1 TO element_num_new)
+			element_position_array(i,1) = element_position_array_tem(i,1)
+			element_position_array(i,2) = element_position_array_tem(i,2)
+			element_position_array(i,3) = element_position_array_tem(i,3)
+		END FOR
+				
+	END FUNCTION
+	
+	/*将6x3矩阵变为6x6矩阵*/
+	FUNCTION matrix_6x3_to_6x6(matrix_a,cargo_bary,barycentre,matrix)	
+		REAL matrix_a()
+		REAL cargo_bary()
+		REAL barycentre()
+		REAL matrix()
+		REAL matrix_six_to_three(3,6)
+		
+		matrix_six_to_three(1,1)=1
+		matrix_six_to_three(1,5)=cargo_bary(3)-barycentre(3)
+		matrix_six_to_three(1,6)=-cargo_bary(2)+barycentre(2)
+		
+		matrix_six_to_three(2,2)=1
+		matrix_six_to_three(2,4)=-cargo_bary(3)+barycentre(3)
+		matrix_six_to_three(2,6)=cargo_bary(1)-barycentre(1)
+		
+		matrix_six_to_three(3,3)=1
+		matrix_six_to_three(3,4)=cargo_bary(2)-barycentre(2)
+		matrix_six_to_three(3,5)=-cargo_bary(1)+barycentre(1)	
+		
+		/*output*/
+		matrix(1,1)=matrix_a(1,1)*matrix_six_to_three(1,1)
+		matrix(1,2)=matrix_a(1,2)*matrix_six_to_three(2,2)
+		matrix(1,3)=matrix_a(1,3)*matrix_six_to_three(3,3)
+		matrix(1,4)=matrix_a(1,2)*matrix_six_to_three(2,4)+matrix_a(1,3)*matrix_six_to_three(3,4)
+		matrix(1,5)=matrix_a(1,1)*matrix_six_to_three(1,5)+matrix_a(1,3)*matrix_six_to_three(3,5)
+		matrix(1,6)=matrix_a(1,1)*matrix_six_to_three(1,6)+matrix_a(1,2)*matrix_six_to_three(2,6)
+		
+		matrix(2,1)=matrix_a(2,1)*matrix_six_to_three(1,1)
+		matrix(2,2)=matrix_a(2,2)*matrix_six_to_three(2,2)
+		matrix(2,3)=matrix_a(2,3)*matrix_six_to_three(3,3)
+		matrix(2,4)=matrix_a(2,2)*matrix_six_to_three(2,4)+matrix_a(2,3)*matrix_six_to_three(3,4)
+		matrix(2,5)=matrix_a(2,1)*matrix_six_to_three(1,5)+matrix_a(2,3)*matrix_six_to_three(3,5)
+		matrix(2,6)=matrix_a(2,1)*matrix_six_to_three(1,6)+matrix_a(2,2)*matrix_six_to_three(2,6)
+		
+		matrix(3,1)=matrix_a(3,1)*matrix_six_to_three(1,1)
+		matrix(3,2)=matrix_a(3,2)*matrix_six_to_three(2,2)
+		matrix(3,3)=matrix_a(3,3)*matrix_six_to_three(3,3)
+		matrix(3,4)=matrix_a(3,2)*matrix_six_to_three(2,4)+matrix_a(3,3)*matrix_six_to_three(3,4)
+		matrix(3,5)=matrix_a(3,1)*matrix_six_to_three(1,5)+matrix_a(3,3)*matrix_six_to_three(3,5)
+		matrix(3,6)=matrix_a(3,1)*matrix_six_to_three(1,6)+matrix_a(3,2)*matrix_six_to_three(2,6)
+		
+		matrix(4,1)=matrix_a(4,1)*matrix_six_to_three(1,1)
+		matrix(4,2)=matrix_a(4,2)*matrix_six_to_three(2,2)
+		matrix(4,3)=matrix_a(4,3)*matrix_six_to_three(3,3)
+		matrix(4,4)=matrix_a(4,2)*matrix_six_to_three(2,4)+matrix_a(4,3)*matrix_six_to_three(3,4)
+		matrix(4,5)=matrix_a(4,1)*matrix_six_to_three(1,5)+matrix_a(4,3)*matrix_six_to_three(3,5)
+		matrix(4,6)=matrix_a(4,1)*matrix_six_to_three(1,6)+matrix_a(4,2)*matrix_six_to_three(2,6)
+		
+		matrix(5,1)=matrix_a(5,1)*matrix_six_to_three(3,3)
+		matrix(5,2)=matrix_a(5,2)*matrix_six_to_three(2,2)
+		matrix(5,3)=matrix_a(5,3)*matrix_six_to_three(3,3)
+		matrix(5,4)=matrix_a(5,2)*matrix_six_to_three(2,4)+matrix_a(5,3)*matrix_six_to_three(3,4)
+		matrix(5,5)=matrix_a(5,1)*matrix_six_to_three(1,5)+matrix_a(5,3)*matrix_six_to_three(3,5)
+		matrix(5,6)=matrix_a(5,1)*matrix_six_to_three(1,6)+matrix_a(5,2)*matrix_six_to_three(2,6)
+		
+		matrix(6,1)=matrix_a(6,1)*matrix_six_to_three(1,1)
+		matrix(6,2)=matrix_a(6,2)*matrix_six_to_three(2,2)
+		matrix(6,3)=matrix_a(6,3)*matrix_six_to_three(3,3)
+		matrix(6,4)=matrix_a(6,2)*matrix_six_to_three(2,4)+matrix_a(6,3)*matrix_six_to_three(3,4)
+		matrix(6,5)=matrix_a(6,1)*matrix_six_to_three(1,5)+matrix_a(6,3)*matrix_six_to_three(3,5)
+		matrix(6,6)=matrix_a(6,1)*matrix_six_to_three(1,6)+matrix_a(6,2)*matrix_six_to_three(2,6)
+	END FUNCTION
+		
+	/*消元求解加速度*/
+	FUNCTION elimination_slove_acceleration(empty_ship_response_matrix,cargo_response_matrix,tank_response_matrix,fx_cg,fy_cg,fz_cg,mx_cg,my_cg,mz_cg,acceleration_matrix)
+		REAL empty_ship_response_matrix()
+		REAL cargo_response_matrix()
+		REAL tank_response_matrix()
+		REAL fx_cg
+		REAL fy_cg
+		REAL fz_cg
+		REAL mx_cg
+		REAL my_cg
+		REAL mz_cg
+			
+		REAL acceleration_matrix()
+		
+		STRING acceleration_matrix_string[2](6)
+		REAL augmented_mass_matrix(6,7)
+		INTEGER i
+		INTEGER j
+		INTEGER k
+		REAL max_temp=0.0
+		REAL row_temp(1,7)
+		REAL column_temp(6,1)
+		REAL acceleration_matrix_temp(6)
+		INTEGER pointer_augmented_mass_matrix(2)
+		STRING acceleration_change_temp[2]
+		REAL elimination_temp
+		
+		FOR(i=1 TO 6)
+			FOR(j=1 TO 6)
+				augmented_mass_matrix(i,j)=empty_ship_response_matrix(i,j)+cargo_response_matrix(i,j)+tank_response_matrix(i,j)
+			END FOR
+		END FOR
+		augmented_mass_matrix(1,7)=fx_cg
+		augmented_mass_matrix(2,7)=fy_cg
+		augmented_mass_matrix(3,7)=fz_cg
+		augmented_mass_matrix(4,7)=mx_cg
+		augmented_mass_matrix(5,7)=my_cg
+		augmented_mass_matrix(6,7)=mz_cg
+			
+		acceleration_matrix_string(1)="ax"
+		acceleration_matrix_string(2)="ay"
+		acceleration_matrix_string(3)="az"
+		acceleration_matrix_string(4)="rx"
+		acceleration_matrix_string(5)="ry"
+		acceleration_matrix_string(6)="rz"
+			
+		/*质量矩阵上三角化*/
+		FOR(k=1 TO 5)
+			/*判断绝对值最大的元*/
+			FOR(j=k TO 6)
+				FOR(i=k TO 6)
+					IF(mth_abs(augmented_mass_matrix(i,j))>mth_abs(max_temp))THEN
+						max_temp=augmented_mass_matrix(i,j)
+						pointer_augmented_mass_matrix(1)=i
+						pointer_augmented_mass_matrix(2)=j
+					END IF
+				END FOR
+			END FOR
+			max_temp=0.0
+			
+			/*交换行*/
+			IF(pointer_augmented_mass_matrix(1)!=k)THEN
+				FOR(j=1 TO 7)
+				row_temp(1,j)=augmented_mass_matrix(k,j)
+				augmented_mass_matrix(k,j)=augmented_mass_matrix(pointer_augmented_mass_matrix(1),j)
+				augmented_mass_matrix(pointer_augmented_mass_matrix(1),j)=row_temp(1,j)
+				END FOR
+			END IF
+			
+			/*交换列*/
+			IF(pointer_augmented_mass_matrix(2)!=k)THEN
+				FOR(i=1 TO 6)
+				column_temp(i,1)=augmented_mass_matrix(i,k)
+				augmented_mass_matrix(i,k)=augmented_mass_matrix(i,pointer_augmented_mass_matrix(2))
+				augmented_mass_matrix(i,pointer_augmented_mass_matrix(2))=column_temp(i,1)
+				END FOR
+				acceleration_change_temp=acceleration_matrix_string(k)
+				acceleration_matrix_string(k)=acceleration_matrix_string(pointer_augmented_mass_matrix(2))
+				acceleration_matrix_string(pointer_augmented_mass_matrix(2))=acceleration_change_temp
+			END IF
+			
+			/*消元*/
+			FOR(i=k+1 TO 6)
+				elimination_temp=augmented_mass_matrix(i,k)/augmented_mass_matrix(k,k)
+				FOR(j=1 TO 7)
+					augmented_mass_matrix(i,j)=-elimination_temp*augmented_mass_matrix(k,j)+augmented_mass_matrix(i,j)
+				END FOR
+			END FOR
+		END FOR
+	
+		/*回代*/
+		acceleration_matrix_temp(6)=augmented_mass_matrix(6,7)/augmented_mass_matrix(6,6)
+		acceleration_matrix_temp(5)=(augmented_mass_matrix(5,7)-augmented_mass_matrix(5,6)*acceleration_matrix_temp(6))/augmented_mass_matrix(5,5)
+		acceleration_matrix_temp(4)=(augmented_mass_matrix(4,7)-augmented_mass_matrix(4,6)*acceleration_matrix_temp(6)-augmented_mass_matrix(4,5)*acceleration_matrix_temp(5))/augmented_mass_matrix(4,4)
+		acceleration_matrix_temp(3)=(augmented_mass_matrix(3,7)-augmented_mass_matrix(3,6)*acceleration_matrix_temp(6)-augmented_mass_matrix(3,5)*acceleration_matrix_temp(5)-augmented_mass_matrix(3,4)*acceleration_matrix_temp(4))/augmented_mass_matrix(3,3)
+		acceleration_matrix_temp(2)=(augmented_mass_matrix(2,7)-augmented_mass_matrix(2,6)*acceleration_matrix_temp(6)-augmented_mass_matrix(2,5)*acceleration_matrix_temp(5)-augmented_mass_matrix(2,4)*acceleration_matrix_temp(4)-augmented_mass_matrix(2,3)*acceleration_matrix_temp(3))/augmented_mass_matrix(2,2)
+		acceleration_matrix_temp(1)=(augmented_mass_matrix(1,7)-augmented_mass_matrix(1,6)*acceleration_matrix_temp(6)-augmented_mass_matrix(1,5)*acceleration_matrix_temp(5)-augmented_mass_matrix(1,4)*acceleration_matrix_temp(4)-augmented_mass_matrix(1,3)*acceleration_matrix_temp(3)-augmented_mass_matrix(1,2)*acceleration_matrix_temp(2))/augmented_mass_matrix(1,1)
+		
+		/*调整顺序*/
+		FOR(i=1 TO 6)
+			IF(acceleration_matrix_string(i)=="ax")THEN
+				acceleration_matrix(1)=acceleration_matrix_temp(i)
+			ELSE IF(acceleration_matrix_string(i)=="ay")THEN
+				acceleration_matrix(2)=acceleration_matrix_temp(i)
+			ELSE IF(acceleration_matrix_string(i)=="az")THEN
+				acceleration_matrix(3)=acceleration_matrix_temp(i)
+			ELSE IF(acceleration_matrix_string(i)=="rx")THEN
+				acceleration_matrix(4)=acceleration_matrix_temp(i)
+			ELSE IF(acceleration_matrix_string(i)=="ry")THEN
+				acceleration_matrix(5)=acceleration_matrix_temp(i)
+			ELSE IF(acceleration_matrix_string(i)=="rz")THEN
+				acceleration_matrix(6)=acceleration_matrix_temp(i)
+			END IF
+		END FOR
+	END FUNCTION
+	
+	
+	/*创建液舱正压力载荷*/
+	FUNCTION create_pressure_pressonly(pressure_name,a_6,barycentre,cargo_bary)
+		/*input*/
+		STRING pressure_name[]
+		REAL a_6()
+		REAL barycentre()						/*全船重心*/
+		REAL cargo_bary()						/*货舱重心*/
+		
+		INTEGER pressure_id
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		INTEGER pressure_factor
+		REAL pressure_tem
+		STRING element_id_array_str[VIRTUAL]
+		STRING field_arr[32](3)
+		STRING element_id_array_str_tem[655350](1)
+		
+		REAL axyz(3)
+		STRING elm_id_arr[32](VIRTUAL)		/*单元ID字符串数组*/
+		STRING func_str[32](VIRTUAL)		/*函数值字符串数组*/
+		INTEGER i
+		
+		d.get_pressure_data(pressure_name,pressure_id,element_num_new,scale_factor,normal_factor)
+	
+		app_int_array_to_vstring("Elm",element_num_new,element_id_array,element_id_array_str)
+		
+		d.comp_axyz(barycentre,cargo_bary,a_6,axyz)
+		
+		sys_allocate_array(elm_id_arr,1,element_num_new)
+		sys_allocate_array(func_str,1,element_num_new)
+		/*正压力*/
+		/*生成离散场*/
+		FOR(i=1 TO element_num_new)
+			elm_id_arr(i)="elm"//str_from_integer(element_id_array(i))
+			
+			IF(element_pressure_array(i)>=0)THEN
+				pressure_factor=1
+			ELSE
+				pressure_factor=-1
+			END IF
+			
+			pressure_tem=-(pre_p_bd(i,1)*axyz(1)+pre_p_bd(i,2)*axyz(2)+pre_p_bd(i,3)*axyz(3))*normal_factor*pressure_factor
+			func_str(i)=str_from_real(pressure_tem)
+		END FOR
+	
+		fields_create_dfem( "dp1_"//pressure_name, "Element", "Scalar", element_num_new, elm_id_arr, func_str )
+	
+		element_id_array_str_tem(1)=element_id_array_str
+	
+		field_arr(1)="f:"//"dp1_"//pressure_name
+
+		loadsbcs_create2( "dp1_"//pressure_name, "Pressure", "Element Uniform", "2D", "Static", element_id_array_str_tem, "FEM", "", "1.0", field_arr, ["", "", ""] )
+		
+	END FUNCTION
+	
+	/*创建货舱正压力及切向力载荷*/
+	FUNCTION create_pressure(pressure_name,a_6,barycentre,cargo_bary)
+		
+		/*input*/
+		STRING pressure_name[]
+		REAL a_6()
+		REAL barycentre()						/*全船重心*/
+		REAL cargo_bary()						/*货舱重心*/
+		
+		INTEGER pressure_id
+		INTEGER element_num_new
+		REAL scale_factor
+		INTEGER normal_factor
+		INTEGER pressure_factor
+		REAL pressure_tem
+		STRING element_id_array_str[VIRTUAL]
+		STRING field_arr[32](3)
+		STRING element_id_array_str_tem[655350](1)
+		
+		REAL axyz(3)
+		STRING elm_id_arr[32](VIRTUAL)		/*单元ID字符串数组*/
+		STRING func_str[32](VIRTUAL)		/*函数值字符串数组*/
+		INTEGER i
+		INTEGER k
+		INTEGER g=1
+		
+		d.get_pressure_data(pressure_name,pressure_id,element_num_new,scale_factor,normal_factor)
+	
+		app_int_array_to_vstring("Elm",element_num_new,element_id_array,element_id_array_str)
+		
+		d.comp_axyz(barycentre,cargo_bary,a_6,axyz)
+		
+		sys_allocate_array(elm_id_arr,1,element_num_new)
+		sys_allocate_array(func_str,1,element_num_new)
+		/*正压力*/
+		/*生成离散场*/
+		FOR(i=1 TO element_num_new)
+			elm_id_arr(i)="elm"//str_from_integer(element_id_array(i))
+			
+			IF(element_pressure_array(i)>=0)THEN
+				pressure_factor=1
+			ELSE
+				pressure_factor=-1
+			END IF
+			
+			pressure_tem=-(pre_p_bd(i,1)*axyz(1)+pre_p_bd(i,2)*axyz(2)+pre_p_bd(i,3)*axyz(3))*normal_factor*pressure_factor
+			func_str(i)=str_from_real(pressure_tem)
+		END FOR
+		
+		fields_create_dfem( "dp1_"//pressure_name, "Element", "Scalar", element_num_new, elm_id_arr, func_str )
+	
+		element_id_array_str_tem(1)=element_id_array_str
+	
+		field_arr(1)="f:"//"dp1_"//pressure_name
+
+		loadsbcs_create2( "dp1_"//pressure_name, "Pressure", "Element Uniform", "2D", "Static", element_id_array_str_tem, "FEM", "", "1.0", field_arr, ["", "", ""] )
+		
+		/*切向力*/
+		INTEGER node_num = 0
+		INTEGER node_id(VIRTUAL)
+		STRING node_id_str[32](VIRTUAL)
+		REAL node_force(VIRTUAL)				/*二维数组，node_num,3*/
+		STRING node_force_str[256](VIRTUAL)
+		INTEGER num_nodes_element
+		INTEGER id_nodes_element(4)
+		REAL shear_tem(3)
+		INTEGER rep
+		STRING node_id_str_tem[VIRTUAL]
+		STRING node_input[655350](1)
+		STRING field_arr_2[32](4)
+		
+		sys_allocate_array(node_id,1,element_num_new*4)
+		sys_allocate_array(node_force,1,element_num_new*4,1,3)
+		
+		/*Element循环*/
+		FOR(i=1 TO element_num_new)
+			db_get_elem_nodes(element_id_array(i),num_nodes_element,id_nodes_element)		
+			
+			/*3or4个node循环*/
+			FOR(k=1 TO num_nodes_element)
+				IF(node_num==0)THEN
+					node_id(1)=id_nodes_element(k)
+					node_num=1
+					d.node_shear(axyz,Pbs_d(i,1:3),Pbs_dx(i),Pbs_dy(i),shear_tem)
+					node_force(node_num,1)=shear_tem(1)/num_nodes_element
+					node_force(node_num,2)=shear_tem(2)/num_nodes_element
+					node_force(node_num,3)=shear_tem(3)/num_nodes_element
+				ELSE				
+					/*查看是否为重复node*/
+					rep=0
+					g=1
+					WHILE(g<=node_num)
+						IF(id_nodes_element(k)==node_id(g))THEN
+							d.node_shear(axyz,Pbs_d(i,1:3),Pbs_dx(i),Pbs_dy(i),shear_tem)
+							node_force(g,1)+=shear_tem(1)/num_nodes_element
+							node_force(g,2)+=shear_tem(2)/num_nodes_element
+							node_force(g,3)+=shear_tem(3)/num_nodes_element
+							rep=1
+							BREAK
+						ELSE
+							g+=1
+						END IF
+					END WHILE
+					
+					IF(rep==0)THEN
+						node_num+=1
+						node_id(node_num)=id_nodes_element(k)
+
+						d.node_shear(axyz,Pbs_d(i,1:3),Pbs_dx(i),Pbs_dy(i),shear_tem)
+						node_force(node_num,1)=shear_tem(1)/num_nodes_element
+						node_force(node_num,2)=shear_tem(2)/num_nodes_element
+						node_force(node_num,3)=shear_tem(3)/num_nodes_element
+					END IF
+				END IF
+
+			END FOR
+		END FOR
+		
+		sys_reallocate_array(node_id,1,node_num)
+		sys_reallocate_array(node_force,1,node_num,1,3)
+		sys_allocate_array(node_id_str,1,node_num)
+		sys_allocate_array(node_force_str,1,node_num)
+		
+		/*生成离散场需要的字符串数组*/
+		FOR(i=1 TO node_num)
+			node_id_str(i)="Node "//str_from_integer(node_id(i))
+			node_force_str(i)="<"//str_from_real(node_force(i,1))//","//str_from_real(node_force(i,2))//","//str_from_real(node_force(i,3))//">"
+		END FOR
+		
+		app_int_array_to_vstring("Node",node_num,node_id,node_id_str_tem)
+		
+		node_input(1)=node_id_str_tem
+			
+		fields_create_dfem( "ds1_"//pressure_name, "Node", "Vector", node_num, node_id_str, node_force_str )
+		
+		field_arr_2(1)="f:"//"ds1_"//pressure_name
+		
+		loadsbcs_create2( "ds1_"//pressure_name, "Force", "Nodal", "", "Static", node_input, "FEM", "Coord 0", "1.", field_arr_2, ["", "", "", ""] )
+		
+	END FUNCTION
+	
+	/*获得沿板向下的方向（切向力方向）*/
+	FUNCTION vector(normal,go_down)
+		REAL normal()
+		REAL go_down()
+		
+		go_down(3)=-(normal(1)**2+normal(2)**2)/normal(3)
+		
+		go_down(1)=-normal(1)/mth_sqrt(normal(1)**2+normal(2)**2+go_down(3)**2)
+		go_down(2)=-normal(2)/mth_sqrt(normal(1)**2+normal(2)**2+go_down(3)**2)
+		go_down(3)=-go_down(3)/mth_sqrt(normal(1)**2+normal(2)**2+go_down(3)**2)
+		
+	END FUNCTION
+	
+	/*计算某node的切向力向量*/
+	FUNCTION node_shear(axyz,d_3,dx,dy,shear_tem)
+		
+		REAL axyz()
+		REAL d_3()
+		REAL dx
+		REAL dy
+		REAL shear_tem()
+		IF(dx==0)THEN
+			shear_tem(1)=d_3(1)*axyz(3)
+			shear_tem(2)=d_3(2)*axyz(3)
+			shear_tem(3)=d_3(3)*axyz(3)
+		ELSE
+			shear_tem(1)=dx*axyz(1)
+			shear_tem(2)=dy*axyz(2)
+			shear_tem(3)=0
+		END IF
+		
+	END FUNCTION
+	
+	
+	/*将全局变量归零，为下一个pressure做准备*/
+	FUNCTION free_array()
+		
+		sys_free_array(pre_p_bd)
+		sys_free_array(element_id_array)
+		sys_free_array(element_pressure_array)
+		sys_free_array(element_area_array)
+		sys_free_array(element_normal_array)
+		sys_free_array(element_position_array)
+		
+	END FUNCTION
+	
+	/*计算某一点xyz线加速度*/
+	FUNCTION comp_axyz(barycentre,cargo_bary,a_alpha,axyz)
+		
+		/*input*/
+		REAL barycentre()			/*全船重心*/
+		REAL cargo_bary()			/*目标点坐标*/
+		REAL a_alpha()				/*全船线加速度a，角加速度alpha*/
+		/*output*/
+		REAL axyz()					/*目标点xyz线加速度*/
+		
+		axyz(1)=a_alpha(1)+a_alpha(5)*(cargo_bary(3)-barycentre(3))-a_alpha(6)*(cargo_bary(2)-barycentre(2))
+		axyz(2)=a_alpha(2)+a_alpha(6)*(cargo_bary(1)-barycentre(1))-a_alpha(4)*(cargo_bary(3)-barycentre(3))
+		axyz(3)=a_alpha(3)+a_alpha(4)*(cargo_bary(2)-barycentre(2))-a_alpha(5)*(cargo_bary(1)-barycentre(1))
+	
+	END FUNCTION
+	
+	/*空船惯性力加载*/
+	FUNCTION empty_ship_force(acc_matrix,all_barycentre,gravity_a,lbc_force_count,lbc_force_name_array)
+		
+		REAL acc_matrix()
+		REAL all_barycentre()
+		REAL gravity_a
+				
+		INTEGER lbc_force_count
+		INTEGER lbc_force_id
+		STRING lbc_force_name_array[]()
+		INTEGER lbc_force_node_num
+		
+		INTEGER n_load_var_id
+		INTEGER n_entity_type
+		INTEGER node_id_array(VIRTUAL)
+		INTEGER n_sub_entity_id
+		REAL node_force(3)
+		INTEGER n_null_vector(3)
+		REAL scale_factor
+		INTEGER n_node_position
+		INTEGER n_region_type
+		INTEGER i
+		INTEGER j
+		STRING node_id_array_str[VIRTUAL]
+		STRING temp_str[655350](1)
+			
+		STRING cx[256]
+		STRING cy[256]
+		STRING cz[256]
+		
+		cx = "-" // str_from_real(acc_matrix(1)) // "-" // str_from_real(acc_matrix(5)) // "*('Z-" // str_from_real(all_barycentre(3)) // ")+" // str_from_real(acc_matrix(6)) // "*('Y-" // str_from_real(all_barycentre(2)) // ")"
+		cy = "-" // str_from_real(acc_matrix(2)) // "-" // str_from_real(acc_matrix(6)) // "*('X-" // str_from_real(all_barycentre(1)) // ")+" // str_from_real(acc_matrix(4)) // "*('Z-" // str_from_real(all_barycentre(3)) // ")"
+		cz = "-" // str_from_real(acc_matrix(3)) // "-" // str_from_real(acc_matrix(4)) // "*('Y-" // str_from_real(all_barycentre(2)) // ")+" // str_from_real(acc_matrix(5)) // "*('X-" // str_from_real(all_barycentre(1)) // ")"
+				
+		fields_create( "dy_empty_ship_inertial_1", "Spatial", 1, "Vector", "Real", "Coord 0", "", "Function", 3, "X", "Y", "Z", cx, cy, cz, FALSE, [0.], [0.], [0.], [[[0.]]] )
+		
+		sys_allocate_array(node_id_array,1,3)
+	
+		FOR(i=1 TO lbc_force_count)
+			db_get_lbc_id(lbc_force_name_array(i),lbc_force_id)
+			db_get_lbc_fem_count(lbc_force_id,lbc_force_node_num)
+			sys_reallocate_array(node_id_array,1,lbc_force_node_num)
+			
+			db_get_all_fem_sv_by_id(lbc_force_id)
+				FOR(j=1 TO lbc_force_node_num)
+					db_get_next_fem_sv_by_id(n_load_var_id,n_entity_type,node_id_array(j),n_sub_entity_id,node_force,n_null_vector,scale_factor,n_node_position,n_region_type)					
+				END FOR
+			
+			app_int_array_to_vstring("Node",lbc_force_node_num,node_id_array,node_id_array_str)
+			
+			temp_str(1)=node_id_array_str
+			loadsbcs_create2( "di1_"//lbc_force_name_array(i), "Force", "Nodal", "", "Static", temp_str, "FEM", "Coord 0", str_from_real(-node_force(3)*scale_factor/gravity_a), ["f:dy_empty_ship_inertial_1", "", "", ""], ["", "", "", ""] )		
+		END FOR
+		
+	END FUNCTION
+	
+		/*获取模型中所有单元和节点位置的函数(与单元ID一一对应)*//*已检查*/
+	FUNCTION node_ele_positions()
+		REAL node_positions_temp(VIRTUAL)
+		REAL element_positions_temp(VIRTUAL)
+		INTEGER ref_coords(VIRTUAL)
+		INTEGER analy_coords(VIRTUAL)
+		STRING str_element_ids[VIRTUAL]
+		INTEGER entity_count
+		INTEGER i
+				
+		/*获取节点位置*/
+		db_count_nodes(cw_num_nodes)
+		sys_allocate_array(cw_node_ids , 1 , cw_num_nodes)
+		sys_allocate_array(node_positions_temp , 1, cw_num_nodes , 1 , 3)
+		sys_allocate_array(ref_coords , 1 , cw_num_nodes)
+		sys_allocate_array(analy_coords , 1 , cw_num_nodes)		
+		db_get_node_ids(cw_num_nodes , cw_node_ids)
+		db_get_nodes(cw_num_nodes , cw_node_ids , ref_coords , analy_coords , node_positions_temp)
+		
+		/*获取单元位置*/
+		db_count_elems(cw_num_elements)
+		sys_allocate_array(cw_element_ids , 1 , cw_num_elements)
+		db_get_elem_ids(cw_num_elements , cw_element_ids)
+		app_int_array_to_vstring("Elm" , cw_num_elements , cw_element_ids , str_element_ids)
+		fem_geom_elem_location(str_element_ids , element_positions_temp , entity_count)
+		
+		/*使单元节点编号与其位置对应*/
+		sys_allocate_array(cw_node_positions , 1 , cw_node_ids(cw_num_nodes) , 1 , 3)
+		sys_allocate_array(cw_element_positions , 1 , cw_element_ids(cw_num_elements) , 1 , 3)
+		FOR(i = 1 TO cw_num_nodes)
+			cw_node_positions(cw_node_ids(i) , 1) = node_positions_temp(i , 1)
+			cw_node_positions(cw_node_ids(i) , 2) = node_positions_temp(i , 2)
+			cw_node_positions(cw_node_ids(i) , 3) = node_positions_temp(i , 3)
+		END FOR
+		FOR(i = 1 TO cw_num_elements)
+			cw_element_positions(cw_element_ids(i) , 1) = element_positions_temp(i , 1)
+			cw_element_positions(cw_element_ids(i) , 2) = element_positions_temp(i , 2)
+			cw_element_positions(cw_element_ids(i) , 3) = element_positions_temp(i , 3)
+		END FOR		
+	
+$	dump cw_num_nodes
+$	dump cw_node_ids
+$	dump cw_node_positions
+$	dump cw_num_elements
+$	dump cw_element_ids
+$	dump cw_element_positions
+	END FUNCTION
+	
+	/*求一个load力与力矩（取计算点）的函数*//*已检查*/
+	FUNCTION one_lbc_resultant(calculate_point , load_id , one_load_resultant)
+		REAL calculate_point()
+		INTEGER load_id
+		REAL one_load_resultant()
+		
+		STRING load_name[32]
+		INTEGER load_type
+		INTEGER application_type
+		INTEGER elem_dimension
+		INTEGER coord_id
+		INTEGER dynamic_flag
+		INTEGER num_values
+		INTEGER i
+		INTEGER load_var_id
+		INTEGER entity_type
+		INTEGER entity_id
+		INTEGER sub_entity_id
+		REAL load_value(3)
+		INTEGER null_vector(3)
+		REAL scale_factor
+		INTEGER node_position
+		INTEGER region_type
+		REAL load_value_S
+		REAL element_area
+		REAL element_normal(3)
+		REAL sqrt_element_normal
+		REAL temp_x
+		REAL temp_y
+		REAL temp_z
+		REAL mass_prop_mass_props_array(VIRTUAL)
+		STRING mass_prop_entity_list[VIRTUAL]
+		STRING mass_prop_reject_list[VIRTUAL]
+		INTEGER mass_prop_noutputs
+		STRING mass_prop_gnames_out[32](VIRTUAL)
+		INTEGER mass_prop_entities(VIRTUAL)
+		INTEGER mass_prop_entity_types(VIRTUAL)
+		INTEGER mass_prop_len_elist
+		INTEGER mass_prop_num_ents
+		INTEGER mass_prop_len_rlist
+		INTEGER mass_prop_num_rejects
+		INTEGER mass_prop_segment_id
+		INTEGER mass_prop_cord_label
+		INTEGER mass_prop_user_cord_label
+		INTEGER bk_nbr
+		INTEGER bk_vid(1)
+		REAL bk_rv(1,3)
+		INTEGER bk_ve_pos(1,3)
+		INTEGER bk_nv(1,3)
+		REAL bk_scale_factor(1)
+		INTEGER n_i_status /*表征函数是否执行，解决计算利用csv离散场生成的force或pressure时的BUG*/
+		
+		db_get_lbc(load_id , load_name , load_type , application_type , @
+					elem_dimension , coord_id , dynamic_flag)/*获取Load信息*/		
+		FOR(i = 1 TO 6)
+			one_load_resultant(i) = 0.0
+		END FOR
+		IF(load_type == 7)THEN/*7为force*/
+			db_get_lbc_fem_count(load_id , num_values)
+			db_get_all_fem_sv_by_id(load_id)
+			FOR(i = 1 TO num_values)
+				n_i_status = db_get_next_fem_sv_by_id(load_var_id , entity_type , entity_id , @
+															sub_entity_id , load_value , null_vector , @
+															scale_factor , node_position , region_type)
+				IF((n_i_status == 0) && (entity_id > 0))THEN
+					IF(load_var_id == 1)THEN
+						one_load_resultant(1) += load_value(1) * scale_factor
+						one_load_resultant(2) += load_value(2) * scale_factor
+						one_load_resultant(3) += load_value(3) * scale_factor
+						one_load_resultant(4) += (cw_node_positions(entity_id , 2) - calculate_point(2)) * load_value(3) * scale_factor - (cw_node_positions(entity_id , 3) - calculate_point(3)) * load_value(2) * scale_factor
+						one_load_resultant(5) += (cw_node_positions(entity_id , 3) - calculate_point(3)) * load_value(1) * scale_factor - (cw_node_positions(entity_id , 1) - calculate_point(1)) * load_value(3) * scale_factor
+						one_load_resultant(6) += (cw_node_positions(entity_id , 1) - calculate_point(1)) * load_value(2) * scale_factor - (cw_node_positions(entity_id , 2) - calculate_point(2)) * load_value(1) * scale_factor
+					ELSE IF(load_var_id == 2)THEN
+						one_load_resultant(4) += load_value(1) * scale_factor
+						one_load_resultant(5) += load_value(2) * scale_factor
+						one_load_resultant(6) += load_value(3) * scale_factor
+					END IF
+				END IF
+			END FOR								
+		ELSE IF(load_type == 8)THEN/*8为pressure*/
+			db_get_lbc_fem_count(load_id , num_values)
+			db_get_all_fem_ss_by_id(load_id)
+			FOR(i = 1 TO num_values)
+				n_i_status = db_get_next_fem_ss_by_id(load_var_id , entity_type , entity_id , @
+										sub_entity_id , load_value_s , scale_factor , @
+										node_position , region_type)
+				IF((n_i_status == 0) && (entity_id > 0))THEN
+					IF(entity_type == 124)THEN
+						lbc_get_shell_area(entity_id , element_area)
+						lbc_get_shell_normal(entity_id , element_normal)
+						sqrt_element_normal = sqrt(element_normal(1)**2 + element_normal(2)**2 + element_normal(3)**2)
+						IF(load_var_id == 1)THEN
+							temp_x = load_value_s * element_area * element_normal(1) / sqrt_element_normal * scale_factor
+							temp_y = load_value_s * element_area * element_normal(2) / sqrt_element_normal * scale_factor
+							temp_z = load_value_s * element_area * element_normal(3) / sqrt_element_normal * scale_factor
+							one_load_resultant(1) += temp_x
+							one_load_resultant(2) += temp_y
+							one_load_resultant(3) += temp_z
+							one_load_resultant(4) += (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_z - (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_y
+							one_load_resultant(5) += (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_x - (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_z
+							one_load_resultant(6) += (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_y - (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_x
+						ELSE IF(load_var_id == 2)THEN
+							temp_x = load_value_s * element_area * element_normal(1) / sqrt_element_normal * scale_factor * -1
+							temp_y = load_value_s * element_area * element_normal(2) / sqrt_element_normal * scale_factor * -1
+							temp_z = load_value_s * element_area * element_normal(3) / sqrt_element_normal * scale_factor * -1
+							one_load_resultant(1) += temp_x
+							one_load_resultant(2) += temp_y
+							one_load_resultant(3) += temp_z
+							one_load_resultant(4) += (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_z - (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_y
+							one_load_resultant(5) += (cw_element_positions(entity_id , 3) - calculate_point(3)) * temp_x - (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_z
+							one_load_resultant(6) += (cw_element_positions(entity_id , 1) - calculate_point(1)) * temp_y - (cw_element_positions(entity_id , 2) - calculate_point(2)) * temp_x
+						END IF
+					ELSE IF(entity_type == 154)THEN
+						IF(load_var_id == 3)THEN
+							/*这部分是计算edge pressure的，不想写*/
+						END IF
+					ELSE IF(entity_type == 153)THEN
+						/*这部分是计算体单元face pressure的，不想写*/
+					END IF
+				END IF
+			END FOR
+		ELSE IF(load_type == 10)THEN/*10为inertial load,目前仅能计算线加速度部分*/
+			mass_prop.cleanup_detailed(mass_prop_mass_props_array,mass_prop_entity_list,mass_prop_reject_list)
+			mass_prop_create_detailed("3D", "All", "FEM", "Summary", 0, [""], "", "Coord 0", "Use Element Properties",@
+									"Use Element Properties","Coord 0",3,1,FALSE,FALSE,@
+									mass_prop_noutputs,mass_prop_gnames_out,mass_prop_entities,@
+									mass_prop_entity_types,mass_prop_mass_props_array,mass_prop_entity_list,@
+									mass_prop_len_elist,mass_prop_num_ents,mass_prop_reject_list,mass_prop_len_rlist,@
+									mass_prop_num_rejects,mass_prop_segment_id,mass_prop_cord_label,mass_prop_user_cord_label)
+			db_bulk_get_lbc_sv(load_id , 1 , bk_nbr , bk_vid , bk_rv , bk_ve_pos , bk_nv , bk_scale_factor)		
+			IF(bk_vid(1) == 1)THEN
+				one_load_resultant(1) = mass_prop_mass_props_array(1,2) * bk_rv(1,1) * bk_scale_factor(1)
+				one_load_resultant(2) = mass_prop_mass_props_array(1,2) * bk_rv(1,2) * bk_scale_factor(1)
+				one_load_resultant(3) = mass_prop_mass_props_array(1,2) * bk_rv(1,3) * bk_scale_factor(1)
+				one_load_resultant(4) = (mass_prop_mass_props_array(1,4) - calculate_point(2)) * mass_prop_mass_props_array(1,2) * bk_rv(1,3) * bk_scale_factor(1) - (mass_prop_mass_props_array(1,5) - calculate_point(3)) * mass_prop_mass_props_array(1,2) * bk_rv(1,2) * bk_scale_factor(1)
+				one_load_resultant(5) = (mass_prop_mass_props_array(1,5) - calculate_point(3)) * mass_prop_mass_props_array(1,2) * bk_rv(1,1) * bk_scale_factor(1) - (mass_prop_mass_props_array(1,3) - calculate_point(1)) * mass_prop_mass_props_array(1,2) * bk_rv(1,3) * bk_scale_factor(1)
+				one_load_resultant(6) = (mass_prop_mass_props_array(1,3) - calculate_point(1)) * mass_prop_mass_props_array(1,2) * bk_rv(1,2) * bk_scale_factor(1) - (mass_prop_mass_props_array(1,4) - calculate_point(2)) * mass_prop_mass_props_array(1,2) * bk_rv(1,1) * bk_scale_factor(1)
+			END IF
+		ELSE IF(load_type == 34)THEN/*34为distributed load*/
+			/*这部分是计算distributed load的，不想写*/
+		END IF
+	END FUNCTION
+		
+	/*求当前工况全船合力的函数*//*已检查*/
+	FUNCTION lbc_resultants(calculate_point , load_resultants)		
+		REAL calculate_point()
+		REAL load_resultants()
+		
+		STRING current_lc_name[32]
+		INTEGER load_case_id
+		REAL load_case_scale_fator
+		INTEGER load_case_type
+		STRING load_case_description[256]
+		INTEGER num_loads
+		INTEGER load_ids(VIRTUAL)
+		REAL load_scale_factors(VIRTUAL)
+		INTEGER load_priorities(VIRTUAL)
+		STRING dynamic_case_name[32]
+		REAL evaluation_point
+		INTEGER i
+		INTEGER j
+		STRING load_name[32]
+		INTEGER load_type
+		INTEGER application_type
+		INTEGER elem_dimension
+		INTEGER coord_id
+		INTEGER dynamic_flag
+		REAL one_load_resultant(6)
+		
+		d.node_ele_positions()
+		
+		FOR(i = 1 TO 6)
+			load_resultants(i) = 0.0
+		END FOR
+		
+		db_get_active_load_case(current_lc_name)/*获取当前Load Case名*/
+		db_count_lbc_by_load_case(current_lc_name , num_loads)
+		sys_allocate_array(load_ids , 1 , num_loads)
+		sys_allocate_array(load_scale_factors , 1 , num_loads)
+		sys_allocate_array(load_priorities , 1 , num_loads)
+		db_get_load_case2(current_lc_name , load_case_id , load_case_scale_fator , @
+							load_case_type , load_case_description , num_loads , @
+							load_ids , load_scale_factors , load_priorities , @
+							dynamic_case_name , evaluation_point)/*获取当前Load Case信息*/
+		
+$		dump current_lc_name
+$		dump num_loads
+$		dump load_ids
+$		dump load_case_scale_fator
+$		dump load_scale_factors
+
+		loadsbcs_eval_all()
+		FOR(i = 1 TO num_loads)
+			db_get_lbc(load_ids(i) , load_name , load_type , application_type , @
+			elem_dimension , coord_id , dynamic_flag)/*获取Load信息*/
+			IF( load_type == 7 || load_type == 8 || load_type == 10 || load_type == 34)THEN
+				d.one_lbc_resultant(calculate_point , load_ids(i) , one_load_resultant)	
+				FOR(j = 1 TO 6)
+					load_resultants(j) += one_load_resultant(j) * load_case_scale_fator * load_scale_factors(i)
+				END FOR
+			END IF
+		END FOR	
+		
+$		dump load_resultants
+		
+	END FUNCTION
+	
+	/*函数：计算全船重心*/
+	FUNCTION all_ship_barycentry(empty_ship_barycentre)
+		REAL empty_ship_barycentre()		
+		STRING temp_group_array[32](1)
+		REAL mass_prop_mass_props_array(VIRTUAL)
+		STRING mass_prop_entity_list[VIRTUAL]
+		STRING mass_prop_reject_list[VIRTUAL]
+		INTEGER mass_prop_noutputs
+		STRING mass_prop_gnames_out[32](VIRTUAL)
+		INTEGER mass_prop_entities(VIRTUAL)
+		INTEGER mass_prop_entity_types(VIRTUAL)
+		INTEGER mass_prop_len_elist
+		INTEGER mass_prop_num_ents
+		INTEGER mass_prop_len_rlist
+		INTEGER mass_prop_num_rejects
+		INTEGER mass_prop_segment_id
+		INTEGER mass_prop_cord_label
+		INTEGER mass_prop_user_cord_label
+				
+		temp_group_array(1)="0000_mass_point_All"
+		mass_prop.cleanup_detailed(mass_prop_mass_props_array,mass_prop_entity_list,mass_prop_reject_list)
+		mass_prop_create_detailed("3D","Group","FEM","Summary",1,temp_group_array,"","Coord 0","Use Element Properties",@
+									"Use Element Properties","Coord 0",3,1,FALSE,FALSE,@
+									mass_prop_noutputs,mass_prop_gnames_out,mass_prop_entities,@
+									mass_prop_entity_types,mass_prop_mass_props_array,mass_prop_entity_list,@
+									mass_prop_len_elist,mass_prop_num_ents,mass_prop_reject_list,mass_prop_len_rlist,@
+									mass_prop_num_rejects,mass_prop_segment_id,mass_prop_cord_label,mass_prop_user_cord_label)
+		
+		empty_ship_barycentre(1)=mass_prop_mass_props_array(1,3)
+		empty_ship_barycentre(2)=mass_prop_mass_props_array(1,4)
+		empty_ship_barycentre(3)=mass_prop_mass_props_array(1,5)			
+	END FUNCTION
+
+END CLASS
+	
+$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$
